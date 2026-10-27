@@ -1,6 +1,6 @@
 import io
 import json
-from PIL import Image
+from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import google.generativeai as genai
@@ -10,21 +10,23 @@ st.set_page_config(
     page_title="Ant Worker Counter (Gemini AI Edition)", layout="wide"
 )
 
-st.title("🐜 Ant Worker Counter (Gemini AI + 手動補正版)")
+st.title("🐜 Ant Worker Counter (AI自動赤点 ＋ 手動補正版)")
 st.write(
-    "AIビジョンでアリの群れを高精度に認識し、画面上のクリックでマーカーの追加・削除を行える実用型ツールです。"
+    "AIがアリの位置を特定して赤点を自動プロットし、画面上のクリックで追加・調整が行えます。"
 )
 
-# サイドバー：APIキーと設定
-st.sidebar.header("⚙️ 設定パネル")
-api_key_input = st.sidebar.text_input(
-    "Google AI Studio APIキー", type="password", help="取得したAPIキーを入力してください"
-)
+# シークレット（Secrets）からAPIキーを自動取得
+api_key = None
+if "GEMINI_API_KEY" in st.secrets:
+  api_key = st.secrets["GEMINI_API_KEY"]
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📝 使い方")
+# サイドバー：使い方などの案内
+st.sidebar.header("⚙️ アプリ情報")
 st.sidebar.markdown(
-    "1. 上部にAPIキーを入力\n2. アリの巣・ケースの写真をアップロード\n3. AIが自動検出した結果を確認\n4. ズレがあれば画像上のクリックで追加・削除"
+    "**📝 使い方**\n"
+    "1. アリの巣・ケースの写真をアップロード\n"
+    "2. 「Gemini AIで自動検出する」をクリック\n"
+    "3. AIが打った赤点を確認し、ズレがあればクリックで追加・調整"
 )
 
 # メイン：画像アップロード
@@ -35,28 +37,34 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
   # 画像の読み込み
   image = Image.open(uploaded_file)
+  img_width, img_height = image.size
 
-  # APIキーが入力されている場合の処理
-  if not api_key_input:
-    st.warning(
-        "⚠️ サイドバーにGoogle AI StudioのAPIキーを入力してください。"
+  # APIキーが設定されているかチェック
+  if not api_key:
+    st.error(
+        "⚠️ APIキーが設定されていません。Streamlit Cloudの「Settings >"
+        " Secrets」に `GEMINI_API_KEY` を設定してください。"
     )
     st.image(image, caption="アップロードされた画像", use_container_width=True)
   else:
     # Gemini APIの設定
-    genai.configure(api_key=api_key_input)
+    genai.configure(api_key=api_key)
 
     if st.button("🤖 Gemini AIでワーカーを自動検出する", type="primary"):
-      with st.spinner("AIがアリの群れを解析中..."):
+      with st.spinner("AIがアリの位置を解析・プロット中..."):
         try:
-          # Gemini 2.5 Flashなどのビジョンモデルを指定
-          model = genai.GenerativeModel("gemini-3.8-flash")
+          # 安定して高速なビジョンモデルを指定
+          model = genai.GenerativeModel("gemini-2.0-flash")
 
           prompt = (
-              "この画像に写っているアリ（ワーカー）の総数を数えてください。"
-              "±10匹程度の誤差は許容します。"
+              "この画像に写っているすべてのアリ（ワーカー）の位置を検出してください。"
+              "それぞれの中心位置の座標（x, y：画像全体の幅・高さを1000とした場合の0〜1000の整数）をリストアップしてください。"
               "必ず以下のJSON形式のみで回答してください（Markdownのバッククォートなどは付けず、純粋なJSON文字列のみにしてください）。"
-              '{"count": 200, "reason": "検出の根拠や状況の簡単な説明"}'
+              "{"
+              '  "count": 29,'
+              '  "ants": [{"x": 150, "y": 320}, {"x": 200, "y": 410}], '
+              '  "reason": "検出の根拠や状況の説明"'
+              "}"
           )
 
           response = model.generate_content([image, prompt])
@@ -73,45 +81,69 @@ if uploaded_file is not None:
             )
 
           result_data = json.loads(response_text)
+          ai_count = result_data.get("count", 0)
+          ants_coords = result_data.get("ants", [])
+          reason = result_data.get("reason", "解析完了")
+
+          # 画像に赤点を描画する処理
+          annotated_image = image.copy()
+          draw = ImageDraw.Draw(annotated_image)
+          
+          # アリのサイズに応じて赤点の大きさを調整（画像幅の約0.8%程度）
+          radius = max(6, int(img_width * 0.008))
+
+          for ant in ants_coords:
+            # 0〜1000の正規化座標を実際のピクセル座標に変換
+            px = int(ant.get("x", 0) * img_width / 1000)
+            py = int(ant.get("y", 0) * img_height / 1000)
+            
+            # 赤い円を描画（視認しやすいように白い縁取りをつける）
+            draw.ellipse(
+                [px - radius, py - radius, px + radius, py + radius],
+                fill="red",
+                outline="white",
+                width=2,
+            )
 
           # セッションステートに結果を保存
-          st.session_state["ai_count"] = result_data.get("count", 0)
-          st.session_state["ai_reason"] = result_data.get(
-              "reason", "解析完了"
-          )
-          st.success(
-              f"✨ AI検出完了！ 推定ワーカー数: {st.session_state['ai_count']} 匹"
-          )
+          st.session_state["annotated_image"] = annotated_image
+          st.session_state["ai_count"] = ai_count
+          st.session_state["ai_reason"] = reason
+          st.success(f"✨ AI検出完了！ 推定ワーカー数: {ai_count} 匹")
 
         except Exception as e:
           st.error(f"エラーが発生しました: {e}")
 
     # 解析結果や手動調整エリアの表示
+    display_image = (
+        st.session_state["annotated_image"]
+        if "annotated_image" in st.session_state
+        else image
+    )
+
     if "ai_count" in st.session_state:
       st.info(f"💡 **AIの解説**: {st.session_state['ai_reason']}")
 
       col1, col2 = st.columns([2, 1])
 
       with col1:
-        st.subheader("🎯 マーカー・手動微調整キャンバス")
+        st.subheader("🎯 AI自動赤点プロット ＆ 手動微調整キャンバス")
         st.write(
-            "画像上の気になる場所をクリックしてポイントを追加・編集できます。"
+            "AIが検出したアリに赤点が打たれています。足りない場所があればクリックして追加できます。"
         )
 
-        # 画像のサイズに合わせたキャンバスの作成
-        img_width, img_height = image.size
-        # 画面幅に合わせてリサイズ（最大幅600px程度に調整）
+        # 画面幅に合わせてキャンバスサイズを調整（最大幅600px）
         max_canvas_width = 600
         scale = max_canvas_width / img_width
         canvas_width = max_canvas_width
         canvas_height = int(img_height * scale)
 
-        # 描画キャンバスの設置
+        # 描画キャンバスの設置（背景に赤点付き画像を使用）
         canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",
+            fill_color="rgba(255, 0, 0, 0.3)",
             stroke_width=3,
             stroke_color="#FF0000",
-            background_image=image,
+            background_image=display_image,
             update_streamlit=True,
             height=canvas_height,
             width=canvas_width,
@@ -119,7 +151,7 @@ if uploaded_file is not None:
             key="canvas",
         )
 
-        # キャンバスに置かれたポイントの数を取得
+        # キャンバスに手動で追加されたポイント数を取得
         if canvas_result.json_data is not None:
           objects = canvas_result.json_data.get("objects", [])
           manual_adds = len(objects)
@@ -130,7 +162,6 @@ if uploaded_file is not None:
         st.subheader("📊 カウント集計")
         base_count = st.session_state["ai_count"]
 
-        # 手動で追加されたポイント分を反映（または手動入力による微調整）
         st.metric(label="AI検出ベース数", value=f"{base_count} 匹")
         st.metric(
             label="手動追加マーカー数",
