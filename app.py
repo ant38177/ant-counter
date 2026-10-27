@@ -53,8 +53,8 @@ if uploaded_file is not None:
     if st.button("🤖 Gemini AIでワーカーを自動検出する", type="primary"):
       with st.spinner("AIがアリの位置を解析・プロット中..."):
         try:
-          # 安定して高速なビジョンモデルを指定
-          model = genai.GenerativeModel("gemini-2.0-flash")
+          # 最新のビジョンモデルを指定
+          model = genai.GenerativeModel("gemini-3.8-flash")
 
           prompt = (
               "この画像に写っているすべてのアリ（ワーカー）の位置を検出してください。"
