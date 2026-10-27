@@ -1,69 +1,96 @@
-import streamlit as st
 import cv2
 import numpy as np
+import streamlit as st
+from PIL import Image
 
-st.set_page_config(page_title="アリのワーカー数 カウンター", page_icon="🐜", layout="wide")
+st.set_page_config(
+    page_title="Ant Worker Counter", page_icon="🐜", layout="wide"
+)
 
 st.title("🐜 アリのワーカー数 自動計測＆推計ツール")
-st.write("写真を1枚〜複数枚アップロードするだけで、画像内のワーカー数を自動カウントし、コロニー全体のトータル数を推計します。")
+st.markdown("写真からアリのワーカー数を正確に検出し、集計します。")
+
+# サイドバーによる感度・フィルター調整
+st.sidebar.header("検出感度・フィルター調整")
+min_area = st.sidebar.slider(
+    "最小サイズ (ゴミ除外)", 10, 500, 80, help="小さすぎるゴミや汚れを除外します"
+)
+max_area = st.sidebar.slider(
+    "最大サイズ (塊除外)",
+    500,
+    30000,
+    8000,
+    help="重なり合った巨大な塊を除外します",
+)
+blur_val = st.sidebar.slider(
+    "ノイズ除去強度 (奇数)",
+    1,
+    15,
+    5,
+    step=2,
+    help="写真のざらつきを抑えます",
+)
 
 uploaded_files = st.file_uploader(
-    "アリの巣・ケースの写真をアップロードしてください（複数選択可）", 
-    type=["jpg", "jpeg", "png"], 
-    accept_multiple_files=True
+    "アリの巣・ケースの写真をアップロード (複数可)",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
 )
 
 if uploaded_files:
-    st.sidebar.header("⚙️ 検出感度調整")
-    min_area = st.sidebar.slider("最小サイズ（ゴミ除去）", 10, 200, 50)
-    max_area = st.sidebar.slider("最大サイズ（固まり除外）", 500, 10000, 5000)
+  total_counts = []
 
-    counts = []
-    processed_images = []
+  for uploaded_file in uploaded_files:
+    # 画像の読み込み
+    image = Image.open(uploaded_file)
+    img_np = np.array(image)
+    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
-    for uploaded_file in uploaded_files:
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        count = 0
-        output_img = img.copy()
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if min_area < area < max_area:
-                count += 1
-                cv2.drawContours(output_img, [cnt], -1, (0, 255, 0), 2)
-        
-        counts.append(count)
-        processed_images.append((uploaded_file.name, cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), count))
+    # 1. グレースケール変換
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
+    # 2. ガウシアンブラーでノイズ軽減
+    if blur_val > 0:
+      gray = cv2.GaussianBlur(gray, (blur_val, blur_val), 0)
+
+    # 3. 白背景に対して「黒いアリ」を抽出する二値化 (Otsuの二値化 + 反転)
+    _, thresh = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    # 4. モルフォロジー演算で細かいトゲやゴミを消去
+    kernel = np.ones((2, 2), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # 5. 輪郭検出
+    contours, _ = cv2.findContours(
+        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    valid_contours = []
+    for cnt in contours:
+      area = cv2.contourArea(cnt)
+      # 面積フィルター
+      if min_area <= area <= max_area:
+        # アスペクト比（極端に細長いゴミなどを除外）
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect_ratio = float(w) / h if h > 0 else 0
+        if 0.15 <= aspect_ratio <= 6.0:
+          valid_contours.append(cnt)
+
+    # 検出結果の描画
+    output_img = img_bgr.copy()
+    cv2.drawContours(output_img, valid_contours, -1, (0, 255, 0), 2)
+    output_rgb = cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB)
+
+    count = len(valid_contours)
+    total_counts.append(count)
+
+    st.subheader(f"📁 {uploaded_file.name} (検出ワーカー数: {count} 匹)")
+    st.image(output_rgb, use_container_width=True)
+
+  if total_counts:
     st.markdown("---")
-    st.subheader("📊 カウント＆トータル推計結果")
-
-    num_files = len(counts)
-
-    if num_files == 1:
-        st.metric(label="🎯 検出トータルワーカー数", value=f"{counts[0]} 匹")
-    else:
-        max_val = max(counts)
-        avg_val = sum(counts) / num_files
-        std_dev = np.std(counts)
-        estimated_total = int(max_val + (std_dev * 0.5))
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🔝 最大アングル値 (Max)", f"{max_val} 匹")
-        col2.metric("📐 平均値 (Average)", f"{avg_val:.1f} 匹")
-        col3.metric("🔮 重複・死角補正推計", f"{estimated_total} 匹")
-
-    st.markdown("---")
-    st.subheader("🖼️ 各画像のアナライズ詳細")
-    
-    cols = st.columns(min(num_files, 3))
-    for idx, (name, rgb_img, c) in enumerate(processed_images):
-        with cols[idx % 3]:
-            st.image(rgb_img, caption=f"{name} (検出: {c}匹)", use_container_width=True)
+    st.metric(
+        "検出トータルワーカー数 (平均)", f"{int(np.mean(total_counts))} 匹"
+    )
