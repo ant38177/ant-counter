@@ -50,7 +50,7 @@ if uploaded_file is not None:
       with st.spinner("AIがアリの群れを解析中..."):
         try:
           # Gemini 2.5 Flashなどのビジョンモデルを指定
-          model = genai.GenerativeModel(""gemini-3.8-flash")
+          model = genai.GenerativeModel("gemini-3.8-flash")
 
           prompt = (
               "この画像に写っているアリ（ワーカー）の総数を数えてください。"
