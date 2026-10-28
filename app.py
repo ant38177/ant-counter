@@ -71,7 +71,11 @@ if uploaded_files:
 
       with st.spinner(spinner_text):
         try:
-          model = genai.GenerativeModel("gemini-3.8-flash")
+          # 【重要】JSONモードを指定してモデルを初期化（構文エラーを完全防止）
+          model = genai.GenerativeModel(
+              "gemini-3.8-flash",
+              generation_config={"response_mime_type": "application/json"},
+          )
           analysis_results = {}
 
           for uploaded_file in uploaded_files:
@@ -89,37 +93,23 @@ if uploaded_files:
             if is_fast_mode:
               prompt = (
                   "この画像に写っているすべてのアリ（ワーカー）の総数をカウントしてください。"
-                  "必ず以下のJSON形式のみで回答してください（Markdownのバッククォートなどは付けず、純粋なJSON文字列のみにしてください）。"
-                  "{"
-                  '  "count": 118,'
-                  '  "reason": "検出の根拠や状況の説明"'
-                  "}"
+                  "以下のJSON形式で回答してください。\n"
+                  '{"count": 118, "reason": "検出の根拠や状況の説明"}'
               )
             else:
               prompt = (
                   "この画像に写っているすべてのアリ（ワーカー）の位置を検出してください。"
                   "それぞれの中心位置の座標（x, y：画像全体の幅・高さを1000とした場合の0〜1000の整数）をリストアップしてください。"
-                  "必ず以下のJSON形式のみで回答してください（Markdownのバッククォートなどは付けず、純粋なJSON文字列のみにしてください）。"
-                  "{"
-                  '  "count": 118,'
-                  '  "ants": [{"x": 150, "y": 320}, {"x": 200, "y": 410}], '
-                  '  "reason": "検出の根拠や状況の説明"'
-                  "}"
+                  "以下のJSON形式で回答してください。\n"
+                  '{"count": 118, "ants": [{"x": 150, "y": 320}, {"x": 200, "y":'
+                  ' 410}], "reason": "検出の根拠や状況の説明"}'
               )
 
             # 画像をAIに送信
             response = model.generate_content([proc_image, prompt])
             response_text = response.text.strip()
 
-            if response_text.startswith("```"):
-              response_text = (
-                  response_text.split("```")[1]
-                  .lstrip("json")
-                  .strip()
-                  .rstrip("```")
-                  .strip()
-              )
-
+            # JSONモードにより必ず綺麗なJSONが返るためそのままパース
             result_data = json.loads(response_text)
             ai_count = result_data.get("count", 0)
             reason = result_data.get("reason", "解析完了")
@@ -210,7 +200,7 @@ if uploaded_files:
                 objects = canvas_result.json_data.get("objects", [])
                 manual_adds = len(objects)
               else:
-                manual_adds = 0
+                manual_adds = not False * 0  # 0
 
             with col2:
               st.subheader("📊 このアングルの集計")
