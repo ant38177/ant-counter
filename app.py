@@ -90,7 +90,18 @@ if uploaded_file:
                 .strip()
             )
 
-          result_data = json.loads(response_text)
+          # 【安全パース】JSONの読み込みに失敗した場合は原因とレスポンスを表示して停止
+          try:
+            result_data = json.loads(response_text)
+          except json.JSONDecodeError as jde:
+            st.error(
+                f"⚠️ JSONの解析に失敗しました（大量の座標出力により途中で途切れた可能性があります）。\n"
+                f"エラー詳細: {jde}"
+            )
+            with st.expander("🔍 AIからの生レスポンスを確認する"):
+              st.text(response_text)
+            st.stop()
+
           ai_count = result_data.get("count", 0)
           ants_coords = result_data.get("ants", [])
           reason = result_data.get("reason", "解析完了")
@@ -127,7 +138,7 @@ if uploaded_file:
           )
 
         except Exception as e:
-          st.error(f"エラーが発生しました: {e}")
+          st.error(f"予期せぬエラーが発生しました: {e}")
 
     # 解析結果と手動調整の表示
     if "annotated_image" in st.session_state:
@@ -186,7 +197,7 @@ if uploaded_file:
             label="手動追加（青）マーカー数",
             value=f"{manual_adds} 個",
             delta=manual_adds,
-          )
+        )
 
         total_count = base_count + manual_adds
         st.markdown("---")
