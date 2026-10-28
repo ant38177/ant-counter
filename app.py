@@ -39,14 +39,13 @@ if uploaded_file:
     st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
     if st.button("🎯 解析と赤点プロットを実行する", type="primary"):
-      # ⏱️ 【タイマー開始】
+      # ⏱️ 【全体のタイマー開始】
       start_time = time.time()
 
       with st.spinner(
           "画像を解析し、アリの位置を特定して赤点を打っています..."
       ):
         try:
-          # 【重要】max_output_tokensを大きくして、100匹以上のデータが途切れないように修正
           model = genai.GenerativeModel(
               "gemini-3.8-flash",
               generation_config={
@@ -73,8 +72,12 @@ if uploaded_file:
               ' 410}], "reason": "Explanation of detection"}'
           )
 
-          # 画像をAIに送信
+          # ⏱️ 【Gemini API専用タイマー開始】
+          api_start = time.time()
           response = model.generate_content([proc_image, prompt])
+          api_elapsed = time.time() - api_start
+          # ⏱️ 【Gemini API専用タイマー終了】
+
           response_text = response.text.strip()
 
           # 万が一バッククォートなどが含まれていても綺麗に除去
@@ -107,7 +110,7 @@ if uploaded_file:
                 width=2,
             )
 
-          # ⏱️ 【タイマー終了・経過時間計算】
+          # ⏱️ 【全体のタイマー終了】
           elapsed_time = time.time() - start_time
 
           st.session_state["annotated_image"] = annotated_image
@@ -116,9 +119,11 @@ if uploaded_file:
           st.session_state["orig_width"] = orig_width
           st.session_state["orig_height"] = orig_height
           st.session_state["elapsed_time"] = elapsed_time
+          st.session_state["api_elapsed"] = api_elapsed
 
           st.success(
-              f"✨ 解析が完了しました！（所要時間: {elapsed_time:.1f}秒）"
+              f"✨ 解析完了！（全体: {elapsed_time:.1f}秒 / API:"
+              f" {api_elapsed:.1f}秒）"
           )
 
         except Exception as e:
@@ -133,7 +138,9 @@ if uploaded_file:
       col1, col2 = st.columns([2, 1])
 
       with col1:
-        st.write("赤点を確認し、見落としがあればクリックで追加できます。")
+        st.write(
+            "AIの赤点はそのままに、見落としがあれば**青い点**を追加できます。"
+        )
         img_width = st.session_state["orig_width"]
         img_height = st.session_state["orig_height"]
         max_canvas_width = 600
@@ -142,9 +149,9 @@ if uploaded_file:
         canvas_height = int(img_height * scale)
 
         canvas_result = st_canvas(
-            fill_color="rgba(255, 0, 0, 0.3)",
+            fill_color="rgba(0, 0, 255, 0.4)",
             stroke_width=3,
-            stroke_color="#FF0000",
+            stroke_color="#0000FF",
             background_image=st.session_state["annotated_image"],
             update_streamlit=True,
             height=canvas_height,
@@ -166,15 +173,20 @@ if uploaded_file:
 
         if "elapsed_time" in st.session_state:
           st.metric(
-              label="解析所要時間",
+              label="トータル所要時間",
               value=f"{st.session_state['elapsed_time']:.1f} 秒",
+          )
+        if "api_elapsed" in st.session_state:
+          st.metric(
+              label="内: Gemini API処理時間",
+              value=f"{st.session_state['api_elapsed']:.1f} 秒",
           )
 
         st.metric(
-            label="手動追加マーカー数",
+            label="手動追加（青）マーカー数",
             value=f"{manual_adds} 個",
             delta=manual_adds,
-        )
+          )
 
         total_count = base_count + manual_adds
         st.markdown("---")
