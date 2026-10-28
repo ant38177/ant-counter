@@ -1,18 +1,17 @@
 import io
 import json
+import time  # ⏱️ タイマー計測用
 from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import google.generativeai as genai
 
 # ページ全体のレイアウト設定
-st.set_page_config(
-    page_title="Ant Worker Counter (Ant Count Tool)", layout="wide"
-)
+st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
 st.title("🐜 Ant Worker Counter")
 st.write(
-    "用途に合わせて「高速モード」と「カウント表示モード」を切り替えて解析できます。"
+    "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
 
 # シークレット（Secrets）からAPIキーを自動取得
@@ -20,204 +19,151 @@ api_key = None
 if "GEMINI_API_KEY" in st.secrets:
   api_key = st.secrets["GEMINI_API_KEY"]
 
-# サイドバー：モード選択と使い方
-st.sidebar.header("⚙️ 解析設定 & 使い方")
-
-analysis_mode = st.sidebar.radio(
-    "解析モードを選択",
-    [
-        "⚡ 高速モード（数のみ・すぐ結果が出る）",
-        "🎯 カウント表示モード（赤点プロット ＆ 手動調整）",
-    ],
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**📝 使い方**\n"
-    "1. 写真を選択（複数枚OK）\n"
-    "2. モードを選んで実行ボタンを押す\n"
-    "3. 必要に応じてタブや赤点を確認"
-)
-
-# 複数ファイルのアップロードに対応
-uploaded_files = st.file_uploader(
-    "アリのケース・巣の写真（複数枚選択可）をアップロード",
+# 画像のアップローダー（1枚のみ）
+uploaded_file = st.file_uploader(
+    "アリのケース・巣の写真を選択",
     type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True,
 )
 
-if uploaded_files:
+if uploaded_file:
   if not api_key:
     st.error(
-        "⚠️ APIキーが設定されていません。Streamlit Cloudの「Settings >"
-        " Secrets」に `GEMINI_API_KEY` を設定してください。"
+        "⚠️ APIキーが設定されていません。Streamlit Cloudのログイン画面等で"
+        " Secretsに `GEMINI_API_KEY` を設定してください。"
     )
   else:
     genai.configure(api_key=api_key)
 
-    is_fast_mode = "高速" in analysis_mode
-    btn_label = (
-        "⚡ 高速モードで集計を実行する"
-        if is_fast_mode
-        else "🎯 カウント表示モードを実行する"
-    )
+    # 元画像の読み込み・プレビュー表示
+    orig_image = Image.open(uploaded_file)
+    st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-    if st.button(btn_label, type="primary"):
-      spinner_text = (
-          "ワーカー数を高速で集計中..."
-          if is_fast_mode
-          else "画像を軽量化して赤点プロット付きで解析中..."
-      )
+    if st.button("🎯 解析と赤点プロットを実行する", type="primary"):
+      # ⏱️ 【タイマー開始】
+      start_time = time.time()
 
-      with st.spinner(spinner_text):
+      with st.spinner(
+          "画像を解析し、アリの位置を特定して赤点を打っています..."
+      ):
         try:
-          # 【重要】JSONモードを指定してモデルを初期化（構文エラーを完全防止）
+          # JSONモードを指定してモデルを初期化（エラーを完全防止）
           model = genai.GenerativeModel(
               "gemini-3.8-flash",
               generation_config={"response_mime_type": "application/json"},
           )
-          analysis_results = {}
 
-          for uploaded_file in uploaded_files:
-            # 元画像の読み込み
-            orig_image = Image.open(uploaded_file)
-            orig_width, orig_height = orig_image.size
+          orig_width, orig_height = orig_image.size
 
-            # 【高速化】長辺が最大800pxになるように縮小（アスペクト比維持）
-            max_size = 800
-            proc_image = orig_image.copy()
-            if max(orig_width, orig_height) > max_size:
-              proc_image.thumbnail((max_size, max_size))
+          # 【高速化】長辺が最大800pxになるように縮小（アスペクト比維持）
+          max_size = 800
+          proc_image = orig_image.copy()
+          if max(orig_width, orig_height) > max_size:
+            proc_image.thumbnail((max_size, max_size))
 
-            # モードによってプロンプトを切り替え
-            if is_fast_mode:
-              prompt = (
-                  "この画像に写っているすべてのアリ（ワーカー）の総数をカウントしてください。"
-                  "以下のJSON形式で回答してください。\n"
-                  '{"count": 118, "reason": "検出の根拠や状況の説明"}'
-              )
-            else:
-              prompt = (
-                  "この画像に写っているすべてのアリ（ワーカー）の位置を検出してください。"
-                  "それぞれの中心位置の座標（x, y：画像全体の幅・高さを1000とした場合の0〜1000の整数）をリストアップしてください。"
-                  "以下のJSON形式で回答してください。\n"
-                  '{"count": 118, "ants": [{"x": 150, "y": 320}, {"x": 200, "y":'
-                  ' 410}], "reason": "検出の根拠や状況の説明"}'
-              )
-
-            # 画像をAIに送信
-            response = model.generate_content([proc_image, prompt])
-            response_text = response.text.strip()
-
-            # JSONモードにより必ず綺麗なJSONが返るためそのままパース
-            result_data = json.loads(response_text)
-            ai_count = result_data.get("count", 0)
-            reason = result_data.get("reason", "解析完了")
-
-            if not is_fast_mode:
-              # カウント表示モードの場合のみ赤点を描画
-              ants_coords = result_data.get("ants", [])
-              annotated_image = orig_image.copy()
-              draw = ImageDraw.Draw(annotated_image)
-              radius = max(8, int(orig_width * 0.008))
-
-              for ant in ants_coords:
-                px = int(ant.get("x", 0) * orig_width / 1000)
-                py = int(ant.get("y", 0) * orig_height / 1000)
-                draw.ellipse(
-                    [px - radius, py - radius, px + radius, py + radius],
-                    fill="red",
-                    outline="white",
-                    width=2,
-                )
-            else:
-              annotated_image = orig_image
-
-            analysis_results[uploaded_file.name] = {
-                "annotated_image": annotated_image,
-                "count": ai_count,
-                "reason": reason,
-                "width": orig_width,
-                "height": orig_height,
-            }
-
-          st.session_state["analysis_results"] = analysis_results
-          st.session_state["mode_used"] = (
-              "fast" if is_fast_mode else "detailed"
+          prompt = (
+              "This is a macro photograph of ants in a breeding case/nest."
+              " Detect the exact center position (x, y coordinates scaled 0 to"
+              " 1000 relative to the image width and height) of every single ant"
+              " (worker) visible in the image."
+              " Return in the following JSON format ONLY:\n"
+              '{"count": 118, "ants": [{"x": 150, "y": 320}, {"x": 200, "y":'
+              ' 410}], "reason": "Explanation of detection"}'
           )
-          st.success("✨ 解析が完了しました！")
+
+          # 画像をAIに送信
+          response = model.generate_content([proc_image, prompt])
+          response_text = response.text.strip()
+
+          result_data = json.loads(response_text)
+          ai_count = result_data.get("count", 0)
+          ants_coords = result_data.get("ants", [])
+          reason = result_data.get("reason", "解析完了")
+
+          # 赤点を描画
+          annotated_image = orig_image.copy()
+          draw = ImageDraw.Draw(annotated_image)
+          radius = max(8, int(orig_width * 0.008))
+
+          for ant in ants_coords:
+            px = int(ant.get("x", 0) * orig_width / 1000)
+            py = int(ant.get("y", 0) * orig_height / 1000)
+            draw.ellipse(
+                [px - radius, py - radius, px + radius, py + radius],
+                fill="red",
+                outline="white",
+                width=2,
+            )
+
+          # ⏱️ 【タイマー終了・経過時間計算】
+          elapsed_time = time.time() - start_time
+
+          st.session_state["annotated_image"] = annotated_image
+          st.session_state["ai_count"] = ai_count
+          st.session_state["reason"] = reason
+          st.session_state["orig_width"] = orig_width
+          st.session_state["orig_height"] = orig_height
+          st.session_state["elapsed_time"] = elapsed_time
+
+          st.success(
+              f"✨ 解析が完了しました！（所要時間: {elapsed_time:.1f}秒）"
+          )
 
         except Exception as e:
           st.error(f"エラーが発生しました: {e}")
 
-    # 結果表示
-    if "analysis_results" in st.session_state:
-      results = st.session_state["analysis_results"]
-      mode_used = st.session_state.get("mode_used", "detailed")
-      file_names = list(results.keys())
-
+    # 解析結果と手動調整の表示
+    if "annotated_image" in st.session_state:
       st.markdown("---")
-      st.subheader("🎯 アングル別解析結果")
+      st.subheader("🎯 解析結果 ＆ 手動調整")
+      st.info(f"💡 **AIの解説**: {st.session_state['reason']}")
 
-      tabs = st.tabs([f"📸 {name}" for name in file_names])
+      col1, col2 = st.columns([2, 1])
 
-      for idx, tab in enumerate(tabs):
-        with tab:
-          name = file_names[idx]
-          res = results[name]
+      with col1:
+        st.write("赤点を確認し、見落としがあればクリックで追加できます。")
+        img_width = st.session_state["orig_width"]
+        img_height = st.session_state["orig_height"]
+        max_canvas_width = 600
+        scale = max_canvas_width / img_width
+        canvas_width = max_canvas_width
+        canvas_height = int(img_height * scale)
 
-          st.info(f"💡 **AIの解説**: {res['reason']}")
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 0, 0, 0.3)",
+            stroke_width=3,
+            stroke_color="#FF0000",
+            background_image=st.session_state["annotated_image"],
+            update_streamlit=True,
+            height=canvas_height,
+            width=canvas_width,
+            drawing_mode="point",
+            key="canvas_single",
+        )
 
-          if mode_used == "fast":
-            # 高速モード（数のみ表示）
-            st.metric(label="AI検出カウント数", value=f"{res['count']} 匹")
-          else:
-            # カウント表示モード（赤点＆手動調整付き）
-            col1, col2 = st.columns([2, 1])
+        if canvas_result.json_data is not None:
+          objects = canvas_result.json_data.get("objects", [])
+          manual_adds = len(objects)
+        else:
+          manual_adds = 0
 
-            with col1:
-              st.write("赤点を確認し、必要に応じてクリックで追加・調整できます。")
-              img_width = res["width"]
-              img_height = res["height"]
-              max_canvas_width = 600
-              scale = max_canvas_width / img_width
-              canvas_width = max_canvas_width
-              canvas_height = int(img_height * scale)
+      with col2:
+        st.subheader("📊 集計サマリー")
+        base_count = st.session_state["ai_count"]
+        st.metric(label="AI検出カウント数", value=f"{base_count} 匹")
 
-              canvas_result = st_canvas(
-                  fill_color="rgba(255, 0, 0, 0.3)",
-                  stroke_width=3,
-                  stroke_color="#FF0000",
-                  background_image=res["annotated_image"],
-                  update_streamlit=True,
-                  height=canvas_height,
-                  width=canvas_width,
-                  drawing_mode="point",
-                  key=f"canvas_{name}",
-              )
+        # ⏱️ 所要時間をメトリックとして表示
+        if "elapsed_time" in st.session_state:
+          st.metric(
+              label="解析所要時間",
+              value=f"{st.session_state['elapsed_time']:.1f} 秒",
+          )
 
-              if canvas_result.json_data is not None:
-                objects = canvas_result.json_data.get("objects", [])
-                manual_adds = len(objects)
-              else:
-                manual_adds = not False * 0  # 0
+        st.metric(
+            label="手動追加マーカー数",
+            value=f"{manual_adds} 個",
+            delta=manual_adds,
+        )
 
-            with col2:
-              st.subheader("📊 このアングルの集計")
-              base_count = res["count"]
-              st.metric(label="AI検出ベース数", value=f"{base_count} 匹")
-              st.metric(
-                  label="手動追加マーカー数",
-                  value=f"{manual_adds} 個",
-                  delta=manual_adds,
-              )
-
-              sub_total = base_count + manual_adds
-              st.markdown("---")
-              st.markdown(f"### 🏁 この写真の確定数: **{sub_total} 匹**")
-
-      # 総合まとめ
-      st.markdown("---")
-      st.subheader("📊 総合まとめ")
-      total_count = sum(r["count"] for r in results.values())
-      st.metric(label="全アングルの合計数", value=f"{total_count} 匹")
+        total_count = base_count + manual_adds
+        st.markdown("---")
+        st.markdown(f"### 🏁 確定カウント数: **{total_count} 匹**")
