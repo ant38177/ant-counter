@@ -1,6 +1,6 @@
 import io
 import json
-import time  # ⏱️ タイマー計測用
+import time
 from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
@@ -28,8 +28,8 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
   if not api_key:
     st.error(
-        "⚠️ APIキーが設定されていません。Streamlit Cloudのログイン画面等で"
-        " Secretsに `GEMINI_API_KEY` を設定してください。"
+        "⚠️ APIキーが設定されていません。Streamlit Cloudの「Settings >"
+        " Secrets」に `GEMINI_API_KEY` を設定してください。"
     )
   else:
     genai.configure(api_key=api_key)
@@ -46,7 +46,6 @@ if uploaded_file:
           "画像を解析し、アリの位置を特定して赤点を打っています..."
       ):
         try:
-          # JSONモードを指定してモデルを初期化（エラーを完全防止）
           model = genai.GenerativeModel(
               "gemini-3.8-flash",
               generation_config={"response_mime_type": "application/json"},
@@ -73,6 +72,16 @@ if uploaded_file:
           # 画像をAIに送信
           response = model.generate_content([proc_image, prompt])
           response_text = response.text.strip()
+
+          # 【安全対策】万が一バッククォートなどが含まれていても綺麗に除去
+          if response_text.startswith("```"):
+            response_text = (
+                response_text.split("```")[1]
+                .lstrip("json")
+                .strip()
+                .rstrip("```")
+                .strip()
+            )
 
           result_data = json.loads(response_text)
           ai_count = result_data.get("count", 0)
@@ -151,7 +160,6 @@ if uploaded_file:
         base_count = st.session_state["ai_count"]
         st.metric(label="AI検出カウント数", value=f"{base_count} 匹")
 
-        # ⏱️ 所要時間をメトリックとして表示
         if "elapsed_time" in st.session_state:
           st.metric(
               label="解析所要時間",
