@@ -46,9 +46,13 @@ if uploaded_file:
           "画像を解析し、アリの位置を特定して赤点を打っています..."
       ):
         try:
+          # 【重要】max_output_tokensを大きくして、100匹以上のデータが途切れないように修正
           model = genai.GenerativeModel(
               "gemini-3.8-flash",
-              generation_config={"response_mime_type": "application/json"},
+              generation_config={
+                  "response_mime_type": "application/json",
+                  "max_output_tokens": 8192,
+              },
           )
 
           orig_width, orig_height = orig_image.size
@@ -73,7 +77,7 @@ if uploaded_file:
           response = model.generate_content([proc_image, prompt])
           response_text = response.text.strip()
 
-          # 【安全対策】万が一バッククォートなどが含まれていても綺麗に除去
+          # 万が一バッククォートなどが含まれていても綺麗に除去
           if response_text.startswith("```"):
             response_text = (
                 response_text.split("```")[1]
