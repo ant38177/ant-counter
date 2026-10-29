@@ -10,7 +10,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (高精度モード)")
+st.title("🐜 Ant Worker Counter (高精度・安全ガード版)")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -57,7 +57,7 @@ if uploaded_file:
 
           orig_width, orig_height = orig_image.size
 
-          # 【高精度化】長辺の最大サイズを800pxから1200pxに拡大して細部を保持
+          # 【高精度化】長辺の最大サイズを1200pxに設定
           max_size = 1200
           proc_image = orig_image.copy()
           if max(orig_width, orig_height) > max_size:
@@ -89,22 +89,18 @@ if uploaded_file:
             )
 
           ants_coords = []
-          ai_count = 0
 
           # ① 通常のJSONパースを試みる
           try:
             result_data = json.loads(response_text)
             if isinstance(result_data, list):
               ants_coords = result_data
-              ai_count = len(result_data)
             elif isinstance(result_data, dict):
-              ai_count = result_data.get("c", result_data.get("count", 0))
               ants_coords = result_data.get(
                   "a", result_data.get("ants", [])
               )
-              if not ants_coords and isinstance(ai_count, list):
-                ants_coords = ai_count
-                ai_count = len(ants_coords)
+              if not ants_coords and "c" in result_data and isinstance(result_data["c"], list):
+                ants_coords = result_data["c"]
           except Exception:
             pass
 
@@ -117,17 +113,20 @@ if uploaded_file:
             )
             for x_str, y_str in matches:
               ants_coords.append({"x": int(x_str), "y": int(y_str)})
-            ai_count = len(ants_coords)
 
-          if not ants_coords:
+          # 【重要】実際に取得できた座標数を正式なカウント数とする
+          ai_count = len(ants_coords)
+
+          if ai_count == 0:
             st.error(
-                "⚠️ 有効な座標データを抽出できませんでした。"
+                "⚠️ 座標データが途中で途切れたか、有効なデータを抽出できませんでした。"
+                "（画像内のアリが多すぎる可能性があります）"
             )
             with st.expander("🔍 AIからの生レスポンスを確認する"):
               st.text(response_text)
             st.stop()
 
-          reason = f"高精度モードで解析完了（AI検出数: {ai_count}匹）"
+          reason = f"高精度モードで解析完了（有効検出数: {ai_count}匹）"
 
           # 赤点を描画
           annotated_image = orig_image.copy()
