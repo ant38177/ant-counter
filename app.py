@@ -1,5 +1,6 @@
 import io
 import json
+import re  # 🔍 どんな崩れ方でも数値を拾う正規表現用
 import time
 from PIL import Image, ImageDraw
 import streamlit as st
@@ -9,7 +10,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (完全安定モード)")
+st.title("🐜 Ant Worker Counter (正規表現ガード搭載)")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -77,7 +78,7 @@ if uploaded_file:
 
           response_text = response.text.strip()
 
-          # 万が一バッククォートなどが含まれていても綺麗に除去
+          # バッククォートなどを除去
           if response_text.startswith("```"):
             response_text = (
                 response_text.split("```")[1]
@@ -87,32 +88,45 @@ if uploaded_file:
                 .strip()
             )
 
-          # JSONパース
+          ants_coords = []
+          ai_count = 0
+
+          # ① まず通常のJSONパースを試みる
           try:
             result_data = json.loads(response_text)
-          except json.JSONDecodeError as jde:
+            if isinstance(result_data, list):
+              ants_coords = result_data
+              ai_count = len(result_data)
+            elif isinstance(result_data, dict):
+              ai_count = result_data.get("c", result_data.get("count", 0))
+              ants_coords = result_data.get(
+                  "a", result_data.get("ants", [])
+              )
+              if not ants_coords and isinstance(ai_count, list):
+                ants_coords = ai_count
+                ai_count = len(ants_coords)
+          except Exception:
+            pass  # JSONパースに失敗しても下の正規表現救出へ流す
+
+          # ② もしJSONパースで座標が取れなかった場合、正規表現でテキストから全座標を強制抽出
+          if not ants_coords:
+            # "x": 123, "y": 456 のようなパターンを全て探し出す
+            matches = re.findall(
+                r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)',
+                response_text,
+                re.IGNORECASE,
+            )
+            for x_str, y_str in matches:
+              ants_coords.append({"x": int(x_str), "y": int(y_str)})
+            ai_count = len(ants_coords)
+
+          if not ants_coords:
             st.error(
-                f"⚠️ JSONの解析に失敗しました。\nエラー詳細: {jde}"
+                "⚠️ 有効な座標データを抽出できませんでした。"
             )
             with st.expander("🔍 AIからの生レスポンスを確認する"):
               st.text(response_text)
             st.stop()
-
-          # 【全自動型安全パース】AIがリストを返そうが辞書を返そうが自動で解釈
-          if isinstance(result_data, list):
-            ants_coords = result_data
-            ai_count = len(result_data)
-          elif isinstance(result_data, dict):
-            ai_count = result_data.get("c", result_data.get("count", 0))
-            ants_coords = result_data.get(
-                "a", result_data.get("ants", [])
-            )
-            if not ants_coords and isinstance(ai_count, list):
-              ants_coords = ai_count
-              ai_count = len(ants_coords)
-          else:
-            ants_coords = []
-            ai_count = 0
 
           reason = f"解析完了（AI検出数: {ai_count}匹）"
 
