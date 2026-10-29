@@ -10,9 +10,9 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (高精度1200px・追加/削除・タイマー対応)")
+st.title("🐜 Ant Worker Counter (座標リスト出力・高精度1200px)")
 st.write(
-    "アリの写真の解析（長辺1200px固定）と、青点（追加）・黄色点（削除）による手動調整を行います。"
+    "アリの写真の解析（長辺1200px固定・座標リスト出力）と、青点（追加）・黄色点（削除）による手動調整を行います。"
 )
 
 # シークレット（Secrets）からAPIキーを自動取得
@@ -44,7 +44,7 @@ if uploaded_file:
       start_time = time.time()
 
       with st.spinner(
-          "高精度モード（1200px）で画像を解析し、アリの位置を特定しています..."
+          "高精度モード（1200px）で画像を解析し、座標リストを取得しています..."
       ):
         try:
           model = genai.GenerativeModel(
@@ -63,11 +63,14 @@ if uploaded_file:
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
 
+          # 💡 【プロンプトの改良】純粋なJSONリスト（配列）のみを要求する
           prompt = (
-              "Detect every single ant (worker) in this image. x and y must be"
-              " integers from 0 to 1000 relative to image size. Return ONLY in"
-              " this JSON format:\n"
-              '{"c": 118, "a": [{"x": 150, "y": 320}, {"x": 200, "y": 410}]}'
+              "Detect every single ant (worker) in this image with high"
+              " precision. x and y must be integers from 0 to 1000 relative to"
+              " image size. Return ONLY a valid JSON list of coordinate"
+              " objects. Do not include any wrapper keys, metadata, or text."
+              " Format strictly as:\n"
+              '[{"x": 150, "y": 320}, {"x": 200, "y": 410}]'
           )
 
           # ⏱️ 【Gemini API専用タイマー開始】
@@ -90,21 +93,21 @@ if uploaded_file:
 
           ants_coords = []
 
-          # ① 通常のJSONパースを試みる
+          # ① 通常のJSONパース（リスト形式を直接読み込む）
           try:
             result_data = json.loads(response_text)
             if isinstance(result_data, list):
               ants_coords = result_data
             elif isinstance(result_data, dict):
-              ants_coords = result_data.get(
-                  "a", result_data.get("ants", [])
-              )
-              if not ants_coords and "c" in result_data and isinstance(result_data["c"], list):
-                ants_coords = result_data["c"]
+              # 万が一オブジェクト形式で返ってきた場合の安全フォールバック
+              for k, v in result_data.items():
+                if isinstance(v, list):
+                  ants_coords = v
+                  break
           except Exception:
             pass
 
-          # ② 正規表現による座標救出
+          # ② 正規表現による座標救出（リスト・辞書どちらの形式にも対応）
           if not ants_coords:
             matches = re.findall(
                 r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)',
@@ -118,8 +121,8 @@ if uploaded_file:
 
           if ai_count == 0:
             st.error(
-                "⚠️ 座標データが途中で途切れたか、有効なデータを抽出できませんでした。"
-                "（画像内のアリが多すぎるか、トークン上限に達した可能性があります）"
+                "⚠️ 座標データが取得できませんでした。"
+                "出力フォーマットを確認してください。"
             )
             with st.expander("🔍 AIからの生レスポンスを確認する"):
               st.text(response_text)
@@ -183,14 +186,15 @@ if uploaded_file:
       ai_ants = st.session_state["ai_ants"]
 
       for ant in ai_ants:
-        px = int(ant.get("x", 0) * orig_w / 1000)
-        py = int(ant.get("y", 0) * orig_h / 1000)
-        draw_base.ellipse(
-            [px - radius, py - radius, px + radius, py + radius],
-            fill="red",
-            outline="white",
-            width=2,
-        )
+        if isinstance(ant, dict):
+          px = int(ant.get("x", 0) * orig_w / 1000)
+          py = int(ant.get("y", 0) * orig_h / 1000)
+          draw_base.ellipse(
+              [px - radius, py - radius, px + radius, py + radius],
+              fill="red",
+              outline="white",
+              width=2,
+          )
 
       # キャンバスウィジェット
       canvas_result = st_canvas(
@@ -230,6 +234,8 @@ if uploaded_file:
       # 削除指定された位置の近くにあるAI赤点を除外する
       valid_ai_ants = []
       for ant in ai_ants:
+        if not isinstance(ant, dict):
+          continue
         ax = int(ant.get("x", 0) * orig_w / 1000)
         ay = int(ant.get("y", 0) * orig_h / 1000)
 
@@ -282,7 +288,6 @@ if uploaded_file:
         st.subheader("📊 集計サマリー")
         st.metric(label="AI有効検出数", value=f"{final_ai_count} 匹")
 
-        # ⏱️ タイマー情報の復活表示
         if "elapsed_time" in st.session_state:
           st.metric(
               label="トータル所要時間",
@@ -295,6 +300,6 @@ if uploaded_file:
           )
 
         st.metric(label="手動追加（青）", value=f"{added_count} 個", delta=added_count)
-        st.metric(label="削除指定（黄）", value=f"{deleted_count} 個", delta=-deleted_count)
+        st.metric(label="削除指定（黄色）", value=f"{deleted_count} 個", delta=-deleted_count)
         st.markdown("---")
         st.markdown(f"### 🏁 確定カウント数: **{total_count} 匹**")
