@@ -1,6 +1,6 @@
 import io
 import json
-import re  # 🔍 どんな崩れ方でも数値を拾う正規表現用
+import re
 import time
 from PIL import Image, ImageDraw
 import streamlit as st
@@ -10,7 +10,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (正規表現ガード搭載)")
+st.title("🐜 Ant Worker Counter (高精度モード)")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -44,7 +44,7 @@ if uploaded_file:
       start_time = time.time()
 
       with st.spinner(
-          "画像を解析し、アリの位置を特定して赤点を打っています..."
+          "高解像度で画像を解析し、アリの位置を特定しています..."
       ):
         try:
           model = genai.GenerativeModel(
@@ -57,8 +57,8 @@ if uploaded_file:
 
           orig_width, orig_height = orig_image.size
 
-          # 【高速化】長辺が最大800pxになるように縮小（アスペクト比維持）
-          max_size = 800
+          # 【高精度化】長辺の最大サイズを800pxから1200pxに拡大して細部を保持
+          max_size = 1200
           proc_image = orig_image.copy()
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
@@ -91,7 +91,7 @@ if uploaded_file:
           ants_coords = []
           ai_count = 0
 
-          # ① まず通常のJSONパースを試みる
+          # ① 通常のJSONパースを試みる
           try:
             result_data = json.loads(response_text)
             if isinstance(result_data, list):
@@ -106,11 +106,10 @@ if uploaded_file:
                 ants_coords = ai_count
                 ai_count = len(ants_coords)
           except Exception:
-            pass  # JSONパースに失敗しても下の正規表現救出へ流す
+            pass
 
-          # ② もしJSONパースで座標が取れなかった場合、正規表現でテキストから全座標を強制抽出
+          # ② 正規表現による座標救出
           if not ants_coords:
-            # "x": 123, "y": 456 のようなパターンを全て探し出す
             matches = re.findall(
                 r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)',
                 response_text,
@@ -128,7 +127,7 @@ if uploaded_file:
               st.text(response_text)
             st.stop()
 
-          reason = f"解析完了（AI検出数: {ai_count}匹）"
+          reason = f"高精度モードで解析完了（AI検出数: {ai_count}匹）"
 
           # 赤点を描画
           annotated_image = orig_image.copy()
