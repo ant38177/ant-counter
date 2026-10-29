@@ -9,7 +9,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (軽量化モード)")
+st.title("🐜 Ant Worker Counter (軽量・安定モード)")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -62,13 +62,12 @@ if uploaded_file:
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
 
-          # 【軽量化プロンプト】キー名を最小限にし、説明文を排除してトークンを節約
+          # 【修正】余計な説明を完全排除し、完全にJSONの構造指定のみに特化
           prompt = (
-              "Detect every single ant (worker) in this macro photo."
-              " Return JSON only in this exact format:\n"
+              "Detect every single ant (worker) in this image. x and y must be"
+              " integers from 0 to 1000 relative to image size. Return ONLY in"
+              " this JSON format:\n"
               '{"c": 118, "a": [{"x": 150, "y": 320}, {"x": 200, "y": 410}]}'
-              " (x, y are 0-1000 integers relative to image width/height. c is"
-              " total count, a is array of coordinates)"
           )
 
           # ⏱️ 【Gemini API専用タイマー開始】
@@ -104,7 +103,7 @@ if uploaded_file:
           # 短縮キー（c, a）からデータを取得
           ai_count = result_data.get("c", 0)
           ants_coords = result_data.get("a", [])
-          reason = f"軽量化モードで正常に解析完了（検出数: {ai_count}匹）"
+          reason = f"軽量安定モードで正常に解析完了（検出数: {ai_count}匹）"
 
           # 赤点を描画
           annotated_image = orig_image.copy()
