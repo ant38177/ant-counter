@@ -9,7 +9,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter")
+st.title("🐜 Ant Worker Counter (軽量化モード)")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -62,14 +62,13 @@ if uploaded_file:
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
 
+          # 【軽量化プロンプト】キー名を最小限にし、説明文を排除してトークンを節約
           prompt = (
-              "This is a macro photograph of ants in a breeding case/nest."
-              " Detect the exact center position (x, y coordinates scaled 0 to"
-              " 1000 relative to the image width and height) of every single ant"
-              " (worker) visible in the image."
-              " Return in the following JSON format ONLY:\n"
-              '{"count": 118, "ants": [{"x": 150, "y": 320}, {"x": 200, "y":'
-              ' 410}], "reason": "Explanation of detection"}'
+              "Detect every single ant (worker) in this macro photo."
+              " Return JSON only in this exact format:\n"
+              '{"c": 118, "a": [{"x": 150, "y": 320}, {"x": 200, "y": 410}]}'
+              " (x, y are 0-1000 integers relative to image width/height. c is"
+              " total count, a is array of coordinates)"
           )
 
           # ⏱️ 【Gemini API専用タイマー開始】
@@ -95,16 +94,17 @@ if uploaded_file:
             result_data = json.loads(response_text)
           except json.JSONDecodeError as jde:
             st.error(
-                f"⚠️ JSONの解析に失敗しました（大量の座標出力により途中で途切れた可能性があります）。\n"
+                f"⚠️ JSONの解析に失敗しました（データ量が上限を超えた可能性があります）。\n"
                 f"エラー詳細: {jde}"
             )
             with st.expander("🔍 AIからの生レスポンスを確認する"):
               st.text(response_text)
             st.stop()
 
-          ai_count = result_data.get("count", 0)
-          ants_coords = result_data.get("ants", [])
-          reason = result_data.get("reason", "解析完了")
+          # 短縮キー（c, a）からデータを取得
+          ai_count = result_data.get("c", 0)
+          ants_coords = result_data.get("a", [])
+          reason = f"軽量化モードで正常に解析完了（検出数: {ai_count}匹）"
 
           # 赤点を描画
           annotated_image = orig_image.copy()
