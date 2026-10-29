@@ -9,7 +9,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (軽量・安定モード)")
+st.title("🐜 Ant Worker Counter (完全安定モード)")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -62,7 +62,6 @@ if uploaded_file:
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
 
-          # 【修正】余計な説明を完全排除し、完全にJSONの構造指定のみに特化
           prompt = (
               "Detect every single ant (worker) in this image. x and y must be"
               " integers from 0 to 1000 relative to image size. Return ONLY in"
@@ -88,22 +87,34 @@ if uploaded_file:
                 .strip()
             )
 
-          # 【安全パース】JSONの読み込みに失敗した場合は原因とレスポンスを表示して停止
+          # JSONパース
           try:
             result_data = json.loads(response_text)
           except json.JSONDecodeError as jde:
             st.error(
-                f"⚠️ JSONの解析に失敗しました（データ量が上限を超えた可能性があります）。\n"
-                f"エラー詳細: {jde}"
+                f"⚠️ JSONの解析に失敗しました。\nエラー詳細: {jde}"
             )
             with st.expander("🔍 AIからの生レスポンスを確認する"):
               st.text(response_text)
             st.stop()
 
-          # 短縮キー（c, a）からデータを取得
-          ai_count = result_data.get("c", 0)
-          ants_coords = result_data.get("a", [])
-          reason = f"軽量安定モードで正常に解析完了（検出数: {ai_count}匹）"
+          # 【全自動型安全パース】AIがリストを返そうが辞書を返そうが自動で解釈
+          if isinstance(result_data, list):
+            ants_coords = result_data
+            ai_count = len(result_data)
+          elif isinstance(result_data, dict):
+            ai_count = result_data.get("c", result_data.get("count", 0))
+            ants_coords = result_data.get(
+                "a", result_data.get("ants", [])
+            )
+            if not ants_coords and isinstance(ai_count, list):
+              ants_coords = ai_count
+              ai_count = len(ants_coords)
+          else:
+            ants_coords = []
+            ai_count = 0
+
+          reason = f"解析完了（AI検出数: {ai_count}匹）"
 
           # 赤点を描画
           annotated_image = orig_image.copy()
@@ -111,14 +122,15 @@ if uploaded_file:
           radius = max(8, int(orig_width * 0.008))
 
           for ant in ants_coords:
-            px = int(ant.get("x", 0) * orig_width / 1000)
-            py = int(ant.get("y", 0) * orig_height / 1000)
-            draw.ellipse(
-                [px - radius, py - radius, px + radius, py + radius],
-                fill="red",
-                outline="white",
-                width=2,
-            )
+            if isinstance(ant, dict):
+              px = int(ant.get("x", 0) * orig_width / 1000)
+              py = int(ant.get("y", 0) * orig_height / 1000)
+              draw.ellipse(
+                  [px - radius, py - radius, px + radius, py + radius],
+                  fill="red",
+                  outline="white",
+                  width=2,
+              )
 
           # ⏱️ 【全体のタイマー終了】
           elapsed_time = time.time() - start_time
