@@ -10,9 +10,9 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (座標リスト出力・高精度1200px)")
+st.title("🐜 Ant Worker Counter (1.5-flash版 / 1500回枠)")
 st.write(
-    "アリの写真の解析（長辺1200px固定・座標リスト出力）と、青点（追加）・黄色点（削除）による手動調整を行います。"
+    "アリの写真の解析と、青点（追加）・黄色点（削除）による手動調整を行います。"
 )
 
 # シークレット（Secrets）からAPIキーを自動取得
@@ -43,12 +43,11 @@ if uploaded_file:
       # ⏱️ 【全体のタイマー開始】
       start_time = time.time()
 
-      with st.spinner(
-          "高精度モード（1200px）で画像を解析し、座標リストを取得しています..."
-      ):
+      with st.spinner("画像を解析し、座標リストを取得しています..."):
         try:
+          # 💡 【モデル変更】無料枠が1日1,500回の `gemini-1.5-flash` に変更
           model = genai.GenerativeModel(
-              "gemini-3.8-flash",
+              "gemini-1.5-flash",
               generation_config={
                   "response_mime_type": "application/json",
                   "max_output_tokens": 8192,
@@ -63,7 +62,6 @@ if uploaded_file:
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
 
-          # 💡 【プロンプトの改良】純粋なJSONリスト（配列）のみを要求する
           prompt = (
               "Detect every single ant (worker) in this image with high"
               " precision. x and y must be integers from 0 to 1000 relative to"
@@ -99,7 +97,6 @@ if uploaded_file:
             if isinstance(result_data, list):
               ants_coords = result_data
             elif isinstance(result_data, dict):
-              # 万が一オブジェクト形式で返ってきた場合の安全フォールバック
               for k, v in result_data.items():
                 if isinstance(v, list):
                   ants_coords = v
@@ -107,7 +104,7 @@ if uploaded_file:
           except Exception:
             pass
 
-          # ② 正規表現による座標救出（リスト・辞書どちらの形式にも対応）
+          # ② 正規表現による座標救出
           if not ants_coords:
             matches = re.findall(
                 r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)',
@@ -164,7 +161,6 @@ if uploaded_file:
           key="edit_mode_radio",
       )
 
-      # 選択されたモードに応じてキャンバスの色を変更
       if "追加" in edit_mode:
         current_stroke = "#0000FF"
         current_fill = "rgba(0, 0, 255, 0.4)"
@@ -179,7 +175,6 @@ if uploaded_file:
       canvas_width = max_canvas_width
       canvas_height = int(orig_h * scale)
 
-      # ベースとなる画像にAIの初期赤点を描画
       base_annotated = st.session_state["orig_image"].copy()
       draw_base = ImageDraw.Draw(base_annotated)
       radius = max(8, int(orig_w * 0.008))
@@ -196,7 +191,6 @@ if uploaded_file:
               width=2,
           )
 
-      # キャンバスウィジェット
       canvas_result = st_canvas(
           fill_color=current_fill,
           stroke_width=3,
@@ -209,7 +203,6 @@ if uploaded_file:
           key="canvas_edit_mode",
       )
 
-      # キャンバス上のオブジェクトを解析（追加と削除に分離）
       manual_adds = []
       manual_deletes = []
 
@@ -231,7 +224,6 @@ if uploaded_file:
           else:
             manual_adds.append((img_x, img_y))
 
-      # 削除指定された位置の近くにあるAI赤点を除外する
       valid_ai_ants = []
       for ant in ai_ants:
         if not isinstance(ant, dict):
@@ -249,11 +241,9 @@ if uploaded_file:
         if not is_deleted:
           valid_ai_ants.append(ant)
 
-      # 最終プレビュー画像の作成
       final_image = st.session_state["orig_image"].copy()
       draw_final = ImageDraw.Draw(final_image)
 
-      # 1. 有効なAI赤点を描画（赤）
       for ant in valid_ai_ants:
         px = int(ant.get("x", 0) * orig_w / 1000)
         py = int(ant.get("y", 0) * orig_h / 1000)
@@ -264,7 +254,6 @@ if uploaded_file:
             width=2,
         )
 
-      # 2. 手動追加点を描画（青）
       for ax, ay in manual_adds:
         draw_final.ellipse(
             [ax - radius, ay - radius, ax + radius, ay + radius],
@@ -273,7 +262,6 @@ if uploaded_file:
             width=2,
         )
 
-      # サマリー集計
       final_ai_count = len(valid_ai_ants)
       added_count = len(manual_adds)
       deleted_count = len(manual_deletes)
