@@ -10,7 +10,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (高精度・安全ガード版)")
+st.title("🐜 Ant Worker Counter")
 st.write(
     "アリの写真を1枚アップロードして、AIによる赤点プロットと手動調整を行います。"
 )
@@ -19,6 +19,15 @@ st.write(
 api_key = None
 if "GEMINI_API_KEY" in st.secrets:
   api_key = st.secrets["GEMINI_API_KEY"]
+
+# 🔍 【解像度モードの選択UI】
+resolution_mode = st.radio(
+    "🔍 解析モードの選択",
+    ["低解像モード (800px / 高速)", "高解像モード (1200px / 高精度)"],
+    horizontal=True,
+)
+# 選択肢に応じて最大解像度を切り替え
+max_size = 800 if "800" in resolution_mode else 1200
 
 # 画像のアップローダー（1枚のみ）
 uploaded_file = st.file_uploader(
@@ -43,8 +52,9 @@ if uploaded_file:
       # ⏱️ 【全体のタイマー開始】
       start_time = time.time()
 
+      mode_name = "高速（800px）" if max_size == 800 else "高精度（1200px）"
       with st.spinner(
-          "高解像度で画像を解析し、アリの位置を特定しています..."
+          f"画像を解析し、アリの位置を特定しています...（モード: {mode_name}）"
       ):
         try:
           model = genai.GenerativeModel(
@@ -57,8 +67,7 @@ if uploaded_file:
 
           orig_width, orig_height = orig_image.size
 
-          # 【高精度化】長辺の最大サイズを1200pxに設定
-          max_size = 1200
+          # 選択されたモードの解像度（800px または 1200px）で縮小
           proc_image = orig_image.copy()
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
@@ -114,19 +123,18 @@ if uploaded_file:
             for x_str, y_str in matches:
               ants_coords.append({"x": int(x_str), "y": int(y_str)})
 
-          # 【重要】実際に取得できた座標数を正式なカウント数とする
           ai_count = len(ants_coords)
 
           if ai_count == 0:
             st.error(
                 "⚠️ 座標データが途中で途切れたか、有効なデータを抽出できませんでした。"
-                "（画像内のアリが多すぎる可能性があります）"
+                "（画像内のアリが多すぎるか、トークン上限に達した可能性があります）"
             )
             with st.expander("🔍 AIからの生レスポンスを確認する"):
               st.text(response_text)
             st.stop()
 
-          reason = f"高精度モードで解析完了（有効検出数: {ai_count}匹）"
+          reason = f"解析完了（モード: {mode_name} / 有効検出数: {ai_count}匹）"
 
           # 赤点を描画
           annotated_image = orig_image.copy()
