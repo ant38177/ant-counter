@@ -10,7 +10,7 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (高精度1200px・追加/削除対応)")
+st.title("🐜 Ant Worker Counter (高精度1200px・追加/削除・タイマー対応)")
 st.write(
     "アリの写真の解析（長辺1200px固定）と、青点（追加）・黄色点（削除）による手動調整を行います。"
 )
@@ -218,7 +218,6 @@ if uploaded_file:
           img_y = int(canvas_y / scale)
 
           stroke_color = obj.get("stroke", "").lower()
-          # 黄色系（削除）か青系（追加）か判定
           if (
               "ffcc" in stroke_color
               or "yellow" in stroke_color
@@ -237,7 +236,7 @@ if uploaded_file:
         is_deleted = False
         for dx, dy in manual_deletes:
           dist = ((ax - dx) ** 2 + (ay - dy) ** 2) ** 0.5
-          if dist < 25:  # 黄色点から25ピクセル以内にある赤点を削除対象とする
+          if dist < 25:
             is_deleted = True
             break
 
@@ -282,6 +281,19 @@ if uploaded_file:
       with col2:
         st.subheader("📊 集計サマリー")
         st.metric(label="AI有効検出数", value=f"{final_ai_count} 匹")
+
+        # ⏱️ タイマー情報の復活表示
+        if "elapsed_time" in st.session_state:
+          st.metric(
+              label="トータル所要時間",
+              value=f"{st.session_state['elapsed_time']:.1f} 秒",
+          )
+        if "api_elapsed" in st.session_state:
+          st.metric(
+              label="内: Gemini API処理時間",
+              value=f"{st.session_state['api_elapsed']:.1f} 秒",
+          )
+
         st.metric(label="手動追加（青）", value=f"{added_count} 個", delta=added_count)
         st.metric(label="削除指定（黄）", value=f"{deleted_count} 個", delta=-deleted_count)
         st.markdown("---")
