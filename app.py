@@ -10,9 +10,9 @@ import google.generativeai as genai
 # ページ全体のレイアウト設定
 st.set_page_config(page_title="Ant Worker Counter", layout="centered")
 
-st.title("🐜 Ant Worker Counter (座標リスト出力・高精度1200px)")
+st.title("🐜 Ant Worker Counter (王冠対応・高精度1600px)")
 st.write(
-    "アリの写真の解析（長辺1200px固定・座標リスト出力）と、青点（追加）・黄色点（削除）による手動調整を行います。"
+    "アリの写真の解析（長辺1600px・女王自動検出）と、青点（追加）・黄色点（削除）による手動調整を行います。"
 )
 
 # シークレット（Secrets）からAPIキーを自動取得
@@ -39,12 +39,12 @@ if uploaded_file:
     orig_image = Image.open(uploaded_file)
     st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-    if st.button("🎯 解析と赤点プロットを実行する", type="primary"):
+    if st.button("🎯 解析と王冠プロットを実行する", type="primary"):
       # ⏱️ 【全体のタイマー開始】
       start_time = time.time()
 
       with st.spinner(
-          "高精度モード（1200px）で画像を解析し、座標リストを取得しています..."
+          "超高精度モード（1600px）で画像を解析し、女王と働きアリを検出しています..."
       ):
         try:
           model = genai.GenerativeModel(
@@ -57,20 +57,22 @@ if uploaded_file:
 
           orig_width, orig_height = orig_image.size
 
-          # 【解像度固定】長辺を1200pxに固定
-          max_size = 1200
+          # 【解像度引き上げ】長辺を1600pxに拡大して細部の解像度をアップ
+          max_size = 1600
           proc_image = orig_image.copy()
           if max(orig_width, orig_height) > max_size:
             proc_image.thumbnail((max_size, max_size))
 
-          # 💡 【プロンプトの改良】純粋なJSONリスト（配列）のみを要求する
+          # 💡 【プロンプトの超高精度化＋女王（Queen）の検出指示】
           prompt = (
-              "Detect every single ant (worker) in this image with high"
-              " precision. x and y must be integers from 0 to 1000 relative to"
-              " image size. Return ONLY a valid JSON list of coordinate"
-              " objects. Do not include any wrapper keys, metadata, or text."
-              " Format strictly as:\n"
-              '[{"x": 150, "y": 320}, {"x": 200, "y": 410}]'
+              "You are an expert entomology and computer vision assistant. "
+              "Detect EVERY SINGLE ant (worker) in this image with maximum possible precision. "
+              "Also, if the queen ant is present, identify her distinctly. "
+              "x and y must be integers from 0 to 1000 relative to image size. "
+              "Classify each as 'worker' or 'queen'. "
+              "Return ONLY a valid JSON list of objects. "
+              "Format strictly as:\n"
+              '[{"x": 150, "y": 320, "type": "worker"}, {"x": 500, "y": 410, "type": "queen"}]'
           )
 
           # ⏱️ 【Gemini API専用タイマー開始】
@@ -99,7 +101,6 @@ if uploaded_file:
             if isinstance(result_data, list):
               ants_coords = result_data
             elif isinstance(result_data, dict):
-              # 万が一オブジェクト形式で返ってきた場合の安全フォールバック
               for k, v in result_data.items():
                 if isinstance(v, list):
                   ants_coords = v
@@ -107,7 +108,7 @@ if uploaded_file:
           except Exception:
             pass
 
-          # ② 正規表現による座標救出（リスト・辞書どちらの形式にも対応）
+          # ② 正規表現による座標救出（フォールバック）
           if not ants_coords:
             matches = re.findall(
                 r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)',
@@ -115,7 +116,7 @@ if uploaded_file:
                 re.IGNORECASE,
             )
             for x_str, y_str in matches:
-              ants_coords.append({"x": int(x_str), "y": int(y_str)})
+              ants_coords.append({"x": int(x_str), "y": int(y_str), "type": "worker"})
 
           ai_count = len(ants_coords)
 
@@ -140,7 +141,7 @@ if uploaded_file:
 
           st.success(
               f"✨ 解析完了！（全体: {elapsed_time:.1f}秒 / API:"
-              f" {api_elapsed:.1f}秒 / 検出: {ai_count}匹）"
+              f" {api_elapsed:.1f}秒 / 検出総数: {ai_count}匹）"
           )
 
         except Exception as e:
@@ -153,7 +154,7 @@ if uploaded_file:
       st.write(
           "モードを選択して画像をクリックしてください。"
           " **➕ 追加（青点）** で見落としを足し、**🗑️ 削除（黄色点）**"
-          " で誤検知を消去できます。"
+          " で誤検知を消去できます。（※女王は王冠マークで表示されます）"
       )
 
       # 追加・削除のモード選択
@@ -179,22 +180,43 @@ if uploaded_file:
       canvas_width = max_canvas_width
       canvas_height = int(orig_h * scale)
 
-      # ベースとなる画像にAIの初期赤点を描画
+      # ベースとなる画像にAIの初期マーカーを描画
       base_annotated = st.session_state["orig_image"].copy()
       draw_base = ImageDraw.Draw(base_annotated)
       radius = max(8, int(orig_w * 0.008))
       ai_ants = st.session_state["ai_ants"]
 
+      # 王冠を描画するヘルパー関数
+      def draw_crown(draw, cx, cy, size):
+        half = int(size * 1.5)
+        points = [
+            (cx - half, cy + half),     # 左下
+            (cx + half, cy + half),     # 右下
+            (cx + half, cy - half * 0.5), # 右上
+            (cx + half * 0.5, cy - half), # 右の山の間
+            (cx, cy - half * 0.5),        # 中央の山の下
+            (cx - half * 0.5, cy - half), # 左の山の間
+            (cx - half, cy - half * 0.5), # 左上
+        ]
+        draw.polygon(points, fill="#FFD700", outline="white", width=2)
+
       for ant in ai_ants:
         if isinstance(ant, dict):
           px = int(ant.get("x", 0) * orig_w / 1000)
           py = int(ant.get("y", 0) * orig_h / 1000)
-          draw_base.ellipse(
-              [px - radius, py - radius, px + radius, py + radius],
-              fill="red",
-              outline="white",
-              width=2,
-          )
+          ant_type = ant.get("type", "worker")
+
+          if ant_type == "queen":
+            # 女王にはゴールドの王冠を描画
+            draw_crown(draw_base, px, py, radius)
+          else:
+            # 働きアリは通常の赤丸
+            draw_base.ellipse(
+                [px - radius, py - radius, px + radius, py + radius],
+                fill="red",
+                outline="white",
+                width=2,
+            )
 
       # キャンバスウィジェット
       canvas_result = st_canvas(
@@ -231,7 +253,7 @@ if uploaded_file:
           else:
             manual_adds.append((img_x, img_y))
 
-      # 削除指定された位置の近くにあるAI赤点を除外する
+      # 削除指定された位置の近くにあるAI検出点を除外する
       valid_ai_ants = []
       for ant in ai_ants:
         if not isinstance(ant, dict):
@@ -253,16 +275,23 @@ if uploaded_file:
       final_image = st.session_state["orig_image"].copy()
       draw_final = ImageDraw.Draw(final_image)
 
-      # 1. 有効なAI赤点を描画（赤）
+      # 1. 有効なAI検出点を描画（働きアリ:赤丸 / 女王:王冠）
+      queen_count = 0
       for ant in valid_ai_ants:
         px = int(ant.get("x", 0) * orig_w / 1000)
         py = int(ant.get("y", 0) * orig_h / 1000)
-        draw_final.ellipse(
-            [px - radius, py - radius, px + radius, py + radius],
-            fill="red",
-            outline="white",
-            width=2,
-        )
+        ant_type = ant.get("type", "worker")
+
+        if ant_type == "queen":
+          queen_count += 1
+          draw_crown(draw_final, px, py, radius)
+        else:
+          draw_final.ellipse(
+              [px - radius, py - radius, px + radius, py + radius],
+              fill="red",
+              outline="white",
+              width=2,
+          )
 
       # 2. 手動追加点を描画（青）
       for ax, ay in manual_adds:
@@ -273,7 +302,7 @@ if uploaded_file:
             width=2,
         )
 
-# サマリー集計
+      # サマリー集計
       final_ai_count = len(valid_ai_ants)
       added_count = len(manual_adds)
       deleted_count = len(manual_deletes)
@@ -281,7 +310,7 @@ if uploaded_file:
 
       col1, col2 = st.columns([2, 1])
       with col1:
-        st.subheader("📸 確定プレビュー（赤:AI検出 / 青:追加）")
+        st.subheader("📸 確定プレビュー（赤:働きアリ / 👑:女王 / 青:追加）")
         st.image(final_image, use_container_width=True)
 
       with col2:
@@ -296,6 +325,8 @@ if uploaded_file:
         
         st.markdown("---")
         st.metric(label="AI有効検出数", value=f"{final_ai_count} 匹")
+        if queen_count > 0:
+          st.metric(label="👑 女王検出", value=f"{queen_count} 匹")
         st.metric(label="手動追加（青）", value=f"{added_count} 個")
         st.metric(label="削除指定（黄色）", value=f"{deleted_count} 個")
 
