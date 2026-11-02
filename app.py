@@ -273,11 +273,11 @@ if uploaded_file:
             width=2,
         )
 
-      # サマリー集計
+# サマリー集計
       final_ai_count = len(valid_ai_ants)
       added_count = len(manual_adds)
       deleted_count = len(manual_deletes)
-      total_count = final_ai_count + added_count
+      total_count = final_ai_count + added_count  # 削除反映済みのAI数 ＋ 手動追加数
 
       col1, col2 = st.columns([2, 1])
       with col1:
@@ -286,20 +286,23 @@ if uploaded_file:
 
       with col2:
         st.subheader("📊 集計サマリー")
-        st.metric(label="AI有効検出数", value=f"{final_ai_count} 匹")
-
-        if "elapsed_time" in st.session_state:
-          st.metric(
-              label="トータル所要時間",
-              value=f"{st.session_state['elapsed_time']:.1f} 秒",
-          )
-        if "api_elapsed" in st.session_state:
-          st.metric(
-              label="内: Gemini API処理時間",
-              value=f"{st.session_state['api_elapsed']:.1f} 秒",
-          )
-
-        st.metric(label="手動追加（青）", value=f"{added_count} 個", delta=added_count)
-        st.metric(label="削除指定（黄色）", value=f"{deleted_count} 個", delta=-deleted_count)
+        
+        # 🏁 最も重要な確定カウント数を一番上に大きく表示
+        st.metric(
+            label="🏁 確定カウント数", 
+            value=f"{total_count} 匹",
+            delta=f"追加+{added_count} / 削除-{deleted_count}" if (added_count > 0 or deleted_count > 0) else None
+        )
+        
         st.markdown("---")
-        st.markdown(f"### 🏁 確定カウント数: **{total_count} 匹**")
+        st.metric(label="AI有効検出数", value=f"{final_ai_count} 匹")
+        st.metric(label="手動追加（青）", value=f"{added_count} 個")
+        st.metric(label="削除指定（黄色）", value=f"{deleted_count} 個")
+
+        st.markdown("---")
+        if "elapsed_time" in st.session_state:
+          st.caption(
+              f"⏱️ 全体: {st.session_state['elapsed_time']:.1f}秒<br>"
+              f"（API: {st.session_state.get('api_elapsed', 0):.1f}秒）",
+              unsafe_allow_html=True
+          )
