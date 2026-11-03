@@ -41,11 +41,26 @@ with st.sidebar:
             st.caption("🔑 [Google AI StudioでAPIキーを取得](https://aistudio.google.com/app/apikey)")
 
     st.markdown("---")
+    
+    # スキャン方式の選択
+    st.subheader("スキャン方式の選択")
+    scan_mode = st.radio(
+        "モードを選択",
+        [
+            "🧠 全体スキャン（オオアリ・少数コロニー向け）",
+            "🔍 田の字4分割ズーム（蜜壺アリ・密集100匹以上向け）"
+        ],
+        index=0
+    )
+    is_grid = "4分割" in scan_mode
+
+    st.markdown("---")
+    st.subheader("AIモデルの選択")
     model_choice = st.selectbox(
-        "AIモデルの選択",
+        "スキャンに使用するモデル",
         options=[
-            ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite（無料枠に強い・推奨）"),
-            ("gemini-flash-latest", "gemini-flash-latest（標準）"),
+            ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite（無料枠に強い・高速）"),
+            ("gemini-flash-latest", "gemini-flash-latest（標準・安定）"),
             ("gemini-3.8-flash", "gemini-3.8-flash（最新知能）")
         ],
         format_func=lambda x: x[1],
@@ -59,37 +74,42 @@ st.title("🐜 アリカウンター")
 st.caption("写真からアリを自動検出し、手動で追加・削除の微調整ができます。")
 
 # ---------------------------------------------------------
-# スキャン関数（画像は切断せず1枚のまま帯状に走査）
+# プロンプト定義
 # ---------------------------------------------------------
-def scan_band(client: genai.Client, img_bytes: bytes, model_name: str, y_start: int, y_end: int):
-    prompt = f"""
-この画像内のアリを検出してください。
-
-【対象エリア】
-画像全体の縦幅を 0〜1000 としたとき、
-今回は **Y座標が {y_start} から {y_end} の範囲内** に胸部があるアリだけを出力してください。
-範囲外のアリや、アリがいない場所には絶対に座標を出さないでください。
+SCAN_PROMPT = """
+画像内のアリをカウントし、各アリの中心座標を出力してください。
 
 【ルール】
-1. 脚や影ではなく、「頭部と腹部をつなぐ中央の胴体（胸部: thorax）」のど真ん中に点を打ってください。
-2. 1匹のアリに対して座標は必ず1つだけです。
-3. 女王アリ（他の個体より明らかに体格が巨大な個体）のみ "is_queen": true とし、通常の働きアリは "is_queen": false にしてください。
+1. 画像全体を見てアリのサイズ感を把握し、脚や影ではなく「頭部と腹部をつなぐ中央の胴体（胸部: thorax）」のど真ん中に点を打ってください。
+2. 1匹のアリに対して出力する座標は厳密に1つだけです。アリがいない場所には絶対に座標を出さないでください。
+3. 女王アリ（他の個体より明らかに体格が巨大な個体）が存在する場合は "is_queen": true とし、通常の働きアリは "is_queen": false にしてください。
 
 必ず以下のJSON形式のみを返してください：
-{{
+{
   "ants": [
-    {{"y": 150, "x": 420, "is_queen": false}}
+    {"y": 120, "x": 450, "is_queen": false},
+    {"y": 145, "x": 820, "is_queen": true}
   ]
-}}
-※ yとxは画像全体の左上を (0,0)、右下を (1000,1000) とする0〜1000の整数正規化座標です。
+}
+※ yとxは画像の左上を (0,0)、右下を (1000,1000) とする0〜1000の整数正規化座標です。
 """
+
+# ---------------------------------------------------------
+# 単一画像スキャンAPI呼び出し
+# ---------------------------------------------------------
+def scan_image(client: genai.Client, image: Image.Image, model_name: str):
+    img_byte_arr = io.BytesIO()
+    rgb_img = image.convert("RGB")
+    rgb_img.save(img_byte_arr, format='JPEG', quality=95)
+    img_bytes = img_byte_arr.getvalue()
+    
     contents = [
         types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-        prompt
+        SCAN_PROMPT
     ]
     config = types.GenerateContentConfig(
         temperature=0.0,
-        max_output_tokens=3000,
+        max_output_tokens=3500,
         response_mime_type="application/json"
     )
 
@@ -116,56 +136,85 @@ def scan_band(client: genai.Client, img_bytes: bytes, model_name: str, y_start: 
                 return []
     return []
 
-def run_band_scan(raw_image: Image.Image, api_key: str, model_name: str, progress_bar, status_box):
+# ---------------------------------------------------------
+# 田の字4分割ズームスキャン（密集用）
+# ---------------------------------------------------------
+def run_grid_scan(raw_image: Image.Image, api_key: str, model_name: str, progress_bar, status_box):
     client = genai.Client(api_key=api_key)
+    orig_w, orig_h = raw_image.size
     
-    # 画像バイト列（元画像のまま切断しない）
-    img_byte_arr = io.BytesIO()
-    rgb_img = raw_image.convert("RGB")
-    rgb_img.save(img_byte_arr, format='JPEG', quality=95)
-    img_bytes = img_byte_arr.getvalue()
-    
-    # 上・中・下の3帯域（少しだけ重ねて見落とし防止）
-    bands = [
-        ("上部エリア", 0, 380),
-        ("中央エリア", 320, 720),
-        ("下部エリア", 660, 1000)
+    overlap = 0.08
+    tile_defs = [
+        ("左上", 0.0, 0.0, 0.5 + overlap, 0.5 + overlap),
+        ("右上", 0.5 - overlap, 0.0, 1.0, 0.5 + overlap),
+        ("左下", 0.0, 0.5 - overlap, 0.5 + overlap, 1.0),
+        ("右下", 0.5 - overlap, 0.5 - overlap, 1.0, 1.0)
     ]
     
-    raw_ants = []
-    for i, (name, y_s, y_e) in enumerate(bands):
-        progress_bar.progress(i / 3.0)
-        status_box.info(f"スキャン中... ({i+1}/3: {name})")
+    all_ants_pixel = []
+    
+    for i, (name, x1_r, y1_r, x2_r, y2_r) in enumerate(tile_defs):
+        progress_bar.progress((i) / 4.0)
+        status_box.info(f"スキャン中... ({i+1}/4: {name}区画)")
         
-        band_ants = scan_band(client, img_bytes, model_name, y_s, y_e)
-        for ant in band_ants:
-            # 指定範囲に入っているものだけ採用
-            if y_s <= ant.get("y", 0) <= y_e:
-                raw_ants.append(ant)
-                
-        if i < 2:
-            time.sleep(2.5)  # レート制限回避
+        px1 = int(x1_r * orig_w)
+        py1 = int(y1_r * orig_h)
+        px2 = min(orig_w, int(x2_r * orig_w))
+        py2 = min(orig_h, int(y2_r * orig_h))
+        
+        tile_w = px2 - px1
+        tile_h = py2 - py1
+        
+        tile_img = raw_image.crop((px1, py1, px2, py2))
+        tile_ants = scan_image(client, tile_img, model_name)
+        
+        for ant in tile_ants:
+            local_x = ant["x"] / 1000.0
+            local_y = ant["y"] / 1000.0
+            
+            global_px = px1 + (local_x * tile_w)
+            global_py = py1 + (local_y * tile_h)
+            
+            all_ants_pixel.append({
+                "px": global_px,
+                "py": global_py,
+                "is_queen": ant.get("is_queen", False)
+            })
+            
+        progress_bar.progress((i + 0.8) / 4.0)
+        if i < 3:
+            time.sleep(1.0)
             
     progress_bar.progress(1.0)
     status_box.empty()
     
-    # 重複マージ（画像全体の正規化座標0〜1000で距離判定：距離18未満を統合）
-    merged = []
-    for ant in raw_ants:
-        dup = False
-        for m in merged:
-            dx = ant["x"] - m["x"]
-            dy = ant["y"] - m["y"]
+    # 適切な重複マージ（原寸ピクセルベースで約18px）
+    merge_threshold_px = max(16.0, orig_w * 0.015)
+    merged_ants = []
+    
+    for ant in all_ants_pixel:
+        duplicate = False
+        for m in merged_ants:
+            dx = ant["px"] - m["px"]
+            dy = ant["py"] - m["py"]
             dist = math.sqrt(dx * dx + dy * dy)
-            if dist < 18:
-                dup = True
+            if dist < merge_threshold_px:
+                duplicate = True
                 if ant.get("is_queen", False):
                     m["is_queen"] = True
                 break
-        if not dup:
-            merged.append(ant)
+        if not duplicate:
+            merged_ants.append(ant)
             
-    return merged
+    final_ants = []
+    for m in merged_ants:
+        final_ants.append({
+            "x": int((m["px"] / orig_w) * 1000.0),
+            "y": int((m["py"] / orig_h) * 1000.0),
+            "is_queen": m.get("is_queen", False)
+        })
+        
+    return final_ants
 
 # ---------------------------------------------------------
 # セッション状態
@@ -202,12 +251,22 @@ if uploaded_file is not None:
             prog = st.progress(0.0)
             status_box = st.empty()
             try:
-                ants = run_band_scan(raw_image, api_key, model_choice, prog, status_box)
+                if is_grid:
+                    # 4分割ズームスキャン
+                    ants = run_grid_scan(raw_image, api_key, model_choice, prog, status_box)
+                else:
+                    # 全体スキャン（画像切断なし・オオアリ向け）
+                    status_box.info("全体スキャン中...")
+                    client = genai.Client(api_key=api_key)
+                    ants = scan_image(client, raw_image, model_choice)
+                    prog.progress(1.0)
+                    status_box.empty()
+                    
                 st.session_state.detected_ants = ants
                 st.session_state.image_analyzed = True
                 st.success(f"スキャン完了：{len(ants)} 匹検出")
             except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
+                status_box.error(f"エラーが発生しました: {e}")
 
     # ---------------------------------------------------------
     # 手動調整キャンバス
@@ -222,7 +281,7 @@ if uploaded_file is not None:
         display_h = int(orig_h * scale)
         resized_img = raw_image.resize((display_w, display_h))
 
-        # 背景に検出点を描画
+        # 背景画像に検出点を描画
         annotated_bg = resized_img.copy()
         draw = ImageDraw.Draw(annotated_bg)
         r = 6
@@ -252,9 +311,10 @@ if uploaded_file is not None:
             width=display_w,
             drawing_mode="point",
             point_display_radius=6,
-            key="ant_canvas_band",
+            key=f"canvas_{is_grid}",
         )
 
+        # 手動調整の集計
         manual_added_coords = []
         deleted_indices = set()
 
