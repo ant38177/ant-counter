@@ -27,7 +27,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 認証・サイドバー設定
+# 認証・サイドバー設定（モデル選択を完全保持）
 # ---------------------------------------------------------
 query_params = st.query_params
 is_admin = query_params.get("admin") == "ant"
@@ -51,30 +51,36 @@ with st.sidebar:
             st.caption("🔑 [Google AI StudioでAPIキーを無料取得する](https://aistudio.google.com/app/apikey)")
 
     st.markdown("---")
-    st.subheader("スキャンエンジン")
-    # フル思考モードを標準に固定
-    model_choice = "gemini-3.8-flash"
-    st.success("🧠 **フル思考・高精度エンジン (gemini-3.8-flash)** 稼働中")
-    st.caption("※ 影の奥や折り重なりをじっくり推論（Thinking）しながら数え切ります。")
+    st.subheader("AIモデルの選択")
+    model_choice = st.selectbox(
+        "スキャンに使用するモデル",
+        options=[
+            ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite（🚀 無料枠最強・高速）"),
+            ("gemini-flash-latest", "gemini-flash-latest（☀️ 標準・安定）"),
+            ("gemini-3.8-flash", "gemini-3.8-flash（🧠 最新知能・深層思考）")
+        ],
+        format_func=lambda x: x[1],
+        index=0
+    )[0]
+    st.caption(f"現在のモデル: `{model_choice}`")
 
 # ---------------------------------------------------------
 # タイトル・概要
 # ---------------------------------------------------------
 st.markdown("<div class='main-title'>🐜 アリカウンター (Ant Worker Counter)</div>", unsafe_allow_html=True)
-st.markdown("<div class='sub-title'>🧠 フル思考モード搭載：時間をかけて影の奥・折り重なりまで1匹残らず数え切ります</div>", unsafe_allow_html=True)
+st.markdown("<div class='sub-title'>超密集したアリも取りこぼさない高精度グリッドスキャン ＆ 手動微調整カウンター</div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# フル思考・深層凝視プロンプト
+# 深層凝視プロンプト（影や重なりをじっくり見分ける）
 # ---------------------------------------------------------
-DEEP_THINKING_PROMPT = """
-あなたには十分な思考時間が与えられています。焦らず、画像を隅々まで凝視して思考してください。
-目的は、画像内に存在する「すべてのアリ」をもれなく正確にカウントし、座標を出力することです。
+DEEP_SCAN_PROMPT = """
+画像内の「すべてのアリ」を漏れなく正確にカウントし、各アリの中心座標を出力してください。
 
-【思考と検出のステップ】
-1. まず画像全体をじっくり観察し、アリのサイズ感、頭部・胸部・腹部のプロポーションを思考・把握してください。
-2. 次に、四隅の壁際、影の中、他のアリの下に潜り込んでいる個体、折り重なっている個体を1匹ずつ分離して特定してください。
+【検出のルール】
+1. まず画像全体をじっくり観察し、アリのサイズ感、頭部・胸部・腹部のプロポーションを把握してください。
+2. 四隅の壁際、影の中、他のアリの下に潜り込んでいる個体、折り重なっている個体を1匹ずつ分離して特定してください。
 3. 見落とし（数え漏らし）を出すことは最大の失敗です。コントラストが低い個体や影と同化している個体も、アリの輪郭・脚の付け根が確認できたら絶対に漏らさずカウントしてください。
-4. 各アリの中心位置として、「頭部と腹部をつなぐ中央の硬い胴体（胸部: thorax）」のど真ん中にマーカー座標を打ってください。
+4. 各アリの位置マーカーは、「頭部と腹部をつなぐ中央の硬い胴体（胸部: thorax）」のど真ん中に打ってください。
 5. 女王アリ（他の個体より明らかに体格・胸部が巨大な個体）が存在する場合は "is_queen": true、通常の働きアリは "is_queen": false としてください。
 
 必ず以下のJSONフォーマットのみを出力してください：
@@ -88,9 +94,9 @@ DEEP_THINKING_PROMPT = """
 """
 
 # ---------------------------------------------------------
-# 単一タイルのフル思考API呼び出し
+# 単一タイルスキャンAPI
 # ---------------------------------------------------------
-def scan_single_tile_with_thinking(client: genai.Client, image: Image.Image):
+def scan_single_tile(client: genai.Client, image: Image.Image, model_name: str):
     img_byte_arr = io.BytesIO()
     rgb_img = image.convert("RGB")
     rgb_img.save(img_byte_arr, format='JPEG', quality=95)
@@ -98,22 +104,25 @@ def scan_single_tile_with_thinking(client: genai.Client, image: Image.Image):
     
     contents = [
         types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-        DEEP_THINKING_PROMPT
+        DEEP_SCAN_PROMPT
     ]
     
-    # 思考バジェットを最大投入（じっくり考える）
-    config = types.GenerateContentConfig(
-        temperature=0.0,
-        max_output_tokens=4096,
-        response_mime_type="application/json",
-        thinking_config=types.ThinkingConfig(thinking_budget=2048)
-    )
+    # 思考対応モデルの場合はthinking_budgetを投入
+    config_args = {
+        "temperature": 0.0,
+        "max_output_tokens": 4096,
+        "response_mime_type": "application/json"
+    }
+    if "3.8-flash" in model_name:
+        config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=2048)
+        
+    config = types.GenerateContentConfig(**config_args)
 
     max_retries = 4
     for attempt in range(max_retries):
         try:
             res = client.models.generate_content(
-                model="gemini-3.8-flash",
+                model=model_name,
                 contents=contents,
                 config=config
             )
@@ -127,7 +136,7 @@ def scan_single_tile_with_thinking(client: genai.Client, image: Image.Image):
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 wait_time = (attempt + 1) * 5
-                st.warning(f"⏳ API無料枠の制限を検知。安全のため {wait_time} 秒クールダウンして思考を再開します... ({attempt + 1}/{max_retries})")
+                st.warning(f"⏳ API無料枠の制限を検知しました。{wait_time}秒待機して再開します... ({attempt + 1}/{max_retries})")
                 time.sleep(wait_time)
             elif attempt < max_retries - 1:
                 time.sleep(3)
@@ -136,9 +145,9 @@ def scan_single_tile_with_thinking(client: genai.Client, image: Image.Image):
     return []
 
 # ---------------------------------------------------------
-# フル思考グリッドスキャン（レート制限を完璧に避ける安全設計）
+# 幾何学グリッドスキャン
 # ---------------------------------------------------------
-def run_deep_thinking_scan(raw_image: Image.Image, api_key: str, progress_bar, status_text):
+def run_grid_scan(raw_image: Image.Image, api_key: str, model_name: str, progress_bar, status_text):
     client = genai.Client(api_key=api_key)
     orig_w, orig_h = raw_image.size
     
@@ -154,7 +163,7 @@ def run_deep_thinking_scan(raw_image: Image.Image, api_key: str, progress_bar, s
     
     for i, (name, x1_r, y1_r, x2_r, y2_r) in enumerate(tile_defs):
         progress_bar.progress((i) / 4.0)
-        status_text.info(f"🧠 【{i+1}/4: {name}区画】をフル思考中... 影の奥・折り重なりを凝視しています（10〜15秒お待ちください）")
+        status_text.info(f"🔍 【{i+1}/4: {name}区画】をスキャン中... ({model_name})")
         
         px1 = int(x1_r * orig_w)
         py1 = int(y1_r * orig_h)
@@ -166,8 +175,7 @@ def run_deep_thinking_scan(raw_image: Image.Image, api_key: str, progress_bar, s
         
         tile_img = raw_image.crop((px1, py1, px2, py2))
         
-        # 思考スキャン実行
-        tile_ants = scan_single_tile_with_thinking(client, tile_img)
+        tile_ants = scan_single_tile(client, tile_img, model_name)
         
         for ant in tile_ants:
             local_x_ratio = ant["x"] / 1000.0
@@ -184,15 +192,14 @@ def run_deep_thinking_scan(raw_image: Image.Image, api_key: str, progress_bar, s
             
         progress_bar.progress((i + 0.8) / 4.0)
         
-        # 無料枠の429制限を絶対に踏まないための安全待機（次区画まで4秒インターバル）
+        # 無料枠のレート制限（429）を回避するための安全インターバル
         if i < 3:
-            status_text.caption("⏳ 無料枠のAPI制限を回避するため、4秒間安全待機しています...")
-            time.sleep(4.0)
+            time.sleep(3.5)
             
     progress_bar.progress(1.0)
-    status_text.success("✨ 全区画の思考スキャン完了！折り重なり判定中...")
+    status_text.success("✨ 全区画のスキャン完了！重なり判定中...")
     
-    # 重複マージ（重なり合った別々の2匹を消去しないよう、しきい値を8pxに極小化）
+    # 重複マージ（重なり合った別々のアリを消去しないよう、しきい値を8pxに極小化）
     merge_threshold_px = 8.0
     merged_ants = []
     
@@ -252,9 +259,9 @@ if uploaded_file is not None:
 
     col_btn, col_info = st.columns([1, 2])
     with col_btn:
-        start_scan = st.button("🧠 フル思考で正確にスキャン開始", type="primary", use_container_width=True)
+        start_scan = st.button("🔍 アリを自動スキャンする", type="primary", use_container_width=True)
     with col_info:
-        st.caption("※ gemini-3.8-flashが影や重なりをじっくり推論（Thinking）して1匹ずつ特定します（約40〜50秒）。")
+        st.caption(f"※ 選択中のモデル `{model_choice}` で、影や重なりを漏れなくスキャンします。")
 
     if start_scan:
         if not api_key:
@@ -263,10 +270,10 @@ if uploaded_file is not None:
             prog = st.progress(0.0)
             status_box = st.empty()
             try:
-                ants = run_deep_thinking_scan(raw_image, api_key, prog, status_box)
+                ants = run_grid_scan(raw_image, api_key, model_choice, prog, status_box)
                 st.session_state.detected_ants = ants
                 st.session_state.image_analyzed = True
-                status_box.success(f"🎉 フル思考スキャン完了！ 合計 {len(ants)} 匹のアリを検出しました。")
+                status_box.success(f"🎉 スキャン完了！ 合計 {len(ants)} 匹のアリを検出しました。")
             except Exception as e:
                 status_box.error(f"❌ スキャン中にエラーが発生しました: {e}")
 
@@ -318,7 +325,7 @@ if uploaded_file is not None:
             width=display_w,
             drawing_mode="point",
             point_display_radius=6,
-            key="ant_canvas_thinking",
+            key="ant_canvas_v4",
         )
 
         manual_added_coords = []
