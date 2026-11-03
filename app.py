@@ -20,12 +20,10 @@ st.title("🐜 Ant Worker Counter")
 st.write("最大500匹対応！長辺1600px・女王自動検出と手動微調整（追加/削除）ツール")
 
 # --- 🔑 APIキーの自動読み込み＆手動入力設定 ---
-# 1. あなた（管理者）が使う場合: Secretsから全自動で取得（入力不要）
 secrets_key = ""
 if "GEMINI_API_KEY" in st.secrets:
     secrets_key = st.secrets["GEMINI_API_KEY"]
 
-# 2. サイドバーにキー入力欄を設置（あなた自身は最初から自動入力された状態になります）
 st.sidebar.header("⚙️ 設定")
 api_key = st.sidebar.text_input(
     "Gemini APIキー (無料)",
@@ -66,7 +64,7 @@ if uploaded_file:
 
             orig_width, orig_height = orig_image.size
 
-            # 長辺1600pxにリサイズ（細部を維持しつつトークン制限を防御）
+            # 長辺1600pxにリサイズ
             max_size = 1600
             proc_image = orig_image.copy()
             if max(orig_width, orig_height) > max_size:
@@ -78,7 +76,6 @@ if uploaded_file:
             img_bytes = img_byte_arr.getvalue()
 
             # 💡 【500匹対応・超軽量プロンプト】
-            # 短縮配列 [[x, y, "w"], [x, y, "q"]] で返すことでトークンを1/3に節約！
             prompt = (
                 "You are an expert entomology and computer vision assistant. "
                 "Detect EVERY SINGLE ant (worker) in this image with maximum precision up to 500+ ants. "
@@ -100,7 +97,8 @@ if uploaded_file:
                     status_placeholder.info(f"⏳ 画像を解析中...（モデル: {model_name}）")
                     api_start = time.time()
 
-                    response = client.models.generateContent(
+                    # 💡 generate_content (アンダーバー付き) に修正
+                    response = client.models.generate_content(
                         model=model_name,
                         contents=[
                             types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
@@ -108,7 +106,6 @@ if uploaded_file:
                         ],
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json",
-                            # 500匹 × 約4トークン ＝ 約2000トークン。3500あれば500匹全部が余裕で入ります！
                             max_output_tokens=3500,
                         )
                     )
@@ -141,7 +138,7 @@ if uploaded_file:
 
             ants_coords = []
 
-            # 💡 【パース処理】超軽量配列 [[x, y, "w"], ...] と 旧来の辞書形式の両方に対応
+            # 💡 【パース処理】
             try:
                 result_data = json.loads(response_text)
                 if isinstance(result_data, list):
@@ -167,14 +164,12 @@ if uploaded_file:
 
             # フォールバック正規表現救出
             if not ants_coords:
-                # [123, 456, 'w'] パターン
                 array_matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', response_text)
                 if array_matches:
                     for x_str, y_str, t_str in array_matches:
                         ant_type = "queen" if t_str and t_str.lower() in ["q", "queen"] else "worker"
                         ants_coords.append({"x": int(x_str), "y": int(y_str), "type": ant_type})
                 else:
-                    # {"x": 123, "y": 456} パターン
                     dict_matches = re.findall(r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)', response_text, re.IGNORECASE)
                     for x_str, y_str in dict_matches:
                         ants_coords.append({"x": int(x_str), "y": int(y_str), "type": "worker"})
