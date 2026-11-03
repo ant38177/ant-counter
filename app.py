@@ -11,13 +11,13 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (高精度・モデル選択版)",
+    page_title="Ant Worker Counter (形態ペア検証・高精度)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("【高精度システム維持】1600pxフル解像度 × 田の字4分割ズーム × モデル切替対応！")
+st.write("【胸＋腹部ペア検証モード】アリ特有の「胸部と腹部の連結構造」を確認して厳密カウント！")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -40,7 +40,7 @@ else:
             "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
         )
 
-# 💡 【高精度を維持したまま、いつでも自由にモデルを切り替え可能！】
+# モデル選択
 model_options = {
     "gemini-3.1-flash-lite（🚀 超高速・無料枠制限なし）": "gemini-3.1-flash-lite",
     "gemini-flash-latest（🌟 標準・安定・高精度）": "gemini-flash-latest",
@@ -50,7 +50,7 @@ model_options = {
 selected_label = st.sidebar.selectbox(
     "AIモデルを選択",
     list(model_options.keys()),
-    index=0  # デフォルトは制限に強い flash-lite
+    index=0
 )
 MODEL_NAME = model_options[selected_label]
 
@@ -69,13 +69,13 @@ if uploaded_file:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 高精度スキャンを実行する", type="primary"):
+        if st.button("🎯 胸＋腹部ペア検証スキャンを実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
             orig_w, orig_h = orig_image.size
 
-            # 💡 1600px基準で細部を極限まで保持
+            # 1600px基準で高精細化
             max_size = 1600
             proc_img = orig_image.copy()
             if max(orig_w, orig_h) > max_size:
@@ -83,7 +83,7 @@ if uploaded_file:
 
             cur_w, cur_h = proc_img.size
 
-            # 💡 田の字4分割（8%ののりしろ付きで境目のアリも逃さない）
+            # 田の字4分割（8%ののりしろ付き）
             split_x = int(cur_w * 0.5)
             split_y = int(cur_h * 0.5)
             overlap_x = int(cur_w * 0.08)
@@ -124,23 +124,25 @@ if uploaded_file:
                     cropped_img.save(img_buf, format="JPEG", quality=95)
                     img_bytes = img_buf.getvalue()
 
+                    # 💡 【核心：胸部と腹部のペア検証プロンプト】
                     prompt = (
-                        f"You are a world-class myrmecologist analyzing a zoomed-in section ({quad['name']}) of an ant nest.\n"
-                        "MISSION: Detect EVERY SINGLE adult ant with 100% precision.\n"
-                        "CRITICAL RULES:\n"
-                        "1. DENSE CLUSTERS: When ants are touching, overlapping, or exchanging food, DO NOT merge them! Place a separate coordinate for EACH distinct thorax.\n"
-                        "2. TYPES: Include swollen amber repletes, regular dark workers, and majors/minors.\n"
-                        "3. QUEEN: Identify the queen ant distinctly as 'q'. Regular ants are 'w'.\n"
-                        "4. SHADOWS: Look closely along dark acrylic walls, corners, and under larger repletes.\n"
-                        "5. EXCLUSIONS: Do NOT count brood (eggs, larvae, white/cream pupae/cocoons) or cotton/screws.\n"
-                        "6. Format: coordinates x and y integers 0 to 1000. Output ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No markdown."
+                        f"You are a master entomologist and computer vision expert analyzing a zoomed-in section ({quad['name']}) of an ant nest.\n"
+                        "MISSION: Detect EVERY SINGLE adult ant by verifying its morphological body parts.\n"
+                        "ANATOMICAL PAIR VERIFICATION (CRITICAL):\n"
+                        "1. THORAX + GASTER PAIR: An ant MUST have BOTH a thorax (mesosoma) and an abdomen (gaster) connected by a waist (petiole).\n"
+                        "   - Standard worker: Slender dark thorax connected to an oval gaster.\n"
+                        "   - Replete ant: A large swollen amber/translucent gaster connected to its front dark thorax/head.\n"
+                        "   - Do NOT count debris, screws, reflections, eggs, or white pupae that lack this connected two-part body.\n"
+                        "2. DENSE CLUSTERS: When ants touch or overlap, locate each separate thorax-gaster pair to ensure EVERY individual is counted separately.\n"
+                        "3. QUEEN: Identify the queen ('q') by her massive thorax with wing scars and large size. Workers are 'w'.\n"
+                        "4. COORDINATE: Place (x, y) EXACTLY on the thorax (body center).\n"
+                        "Output ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. Coordinates 0 to 1000. No text."
                     )
 
-                    # 💡 503混雑や429制限を自動で通り抜ける再試行ガード
                     resp = None
                     for attempt in range(3):
                         try:
-                            status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を高精度スキャン中... (モデル: {MODEL_NAME})")
+                            status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を「胸＋腹部ペア検証」スキャン中... (モデル: {MODEL_NAME})")
                             resp = client.models.generate_content(
                                 model=MODEL_NAME,
                                 contents=[
@@ -157,13 +159,13 @@ if uploaded_file:
                             err_str = str(e)
                             if "503" in err_str or "UNAVAILABLE" in err_str:
                                 if attempt < 2:
-                                    status_box.warning(f"⚠️ Googleサーバーが一時混雑しています。3秒後に自動再開します（{attempt+1}/3）...")
+                                    status_box.warning(f"⚠️ サーバー混雑中。3秒後に自動再開します（{attempt+1}/3）...")
                                     time.sleep(3.0)
                                 else:
                                     raise e
                             elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                                 if attempt < 2:
-                                    status_box.warning(f"⚠️ 無料枠の制限を検知。安全のため12秒待機して再開します（{attempt+1}/3）...")
+                                    status_box.warning(f"⚠️ 無料枠待機中…12秒待機します（{attempt+1}/3）...")
                                     time.sleep(12.0)
                                 else:
                                     raise e
@@ -181,7 +183,7 @@ if uploaded_file:
                         matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', res_text)
                         raw_items = [[int(x), int(y), t or 'w'] for x, y, t in matches]
 
-                    # 💡 全体座標への換算＆近接マージ（しきい値15）
+                    # 座標換算＆近接マージ（判定距離15）
                     for item in raw_items:
                         if isinstance(item, list) and len(item) >= 2:
                             local_x = item[0]
@@ -222,7 +224,7 @@ if uploaded_file:
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 高精度スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒 / モデル: {MODEL_NAME}）")
+            st.success(f"✨ 形態ペア検証スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
