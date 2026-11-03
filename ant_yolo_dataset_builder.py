@@ -11,14 +11,12 @@ st.set_page_config(page_title="Ant YOLO Dataset Builder", layout="wide")
 
 st.title("🐜 Ant YOLO Dataset Builder（自作AIアシスト搭載）")
 
-# 保存先ディレクトリの準備
 DATA_DIR = "ant_dataset"
 IMAGES_DIR = os.path.join(DATA_DIR, "images", "all")
 LABELS_DIR = os.path.join(DATA_DIR, "labels", "all")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(LABELS_DIR, exist_ok=True)
 
-# セッション状態の初期化
 if "canvas_key" not in st.session_state:
     st.session_state["canvas_key"] = 0
 if "persistent_boxes" not in st.session_state:
@@ -26,69 +24,27 @@ if "persistent_boxes" not in st.session_state:
 if "last_image_hash" not in st.session_state:
     st.session_state["last_image_hash"] = None
 
-# --- YOLOモデルの診断とロード ---
-yolo_diag = []
+# --- YOLOモデルのロード ---
 model = None
 YOLO_AVAILABLE = False
-
 try:
     from ultralytics import YOLO
-    yolo_diag.append("✅ ultralytics ライブラリ: OK")
-except Exception as e:
-    yolo_diag.append(f"❌ ultralytics エラー: {e}")
-
-# パスの探索
-possible_paths = [
-    "best.pt",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.pt"),
-    "manual_best.pt"
-]
-found_path = None
-for p in possible_paths:
-    if os.path.exists(p):
-        found_path = p
-        break
-
-if found_path and "YOLO" in locals():
-    try:
-        model = YOLO(found_path)
+    if os.path.exists("best.pt"):
+        model = YOLO("best.pt")
         YOLO_AVAILABLE = True
-        yolo_diag.append(f"✅ モデル読み込み成功！ ({os.path.basename(found_path)})")
-    except Exception as e:
-        yolo_diag.append(f"❌ モデル読込エラー: {e}")
-elif not found_path:
-    yolo_diag.append("⚠️ best.pt が見つかりません")
+except Exception as e:
+    YOLO_AVAILABLE = False
 
-# サイドバー表示
 with st.sidebar:
     st.subheader("🤖 AIアシスト状態")
-    for msg in yolo_diag:
-        if "✅" in msg:
-            st.success(msg)
-        elif "❌" in msg:
-            st.error(msg)
-        else:
-            st.warning(msg)
-
-    # 画面から直接 best.pt を読み込むフォールバック
-    if not YOLO_AVAILABLE and "YOLO" in locals():
-        st.markdown("---")
-        st.write("📁 **PCの `best.pt` を直接ドラッグ＆ドロップ：**")
-        uploaded_pt = st.file_uploader("best.pt を選択", type=["pt"], key="pt_uploader")
-        if uploaded_pt is not None:
-            try:
-                with open("manual_best.pt", "wb") as f:
-                    f.write(uploaded_pt.getbuffer())
-                model = YOLO("manual_best.pt")
-                YOLO_AVAILABLE = True
-                st.success("🎉 モデル読み込み完了！")
-                st.rerun()
-            except Exception as e:
-                st.error(f"読み込み失敗: {e}")
-
     if YOLO_AVAILABLE:
-        conf_thresh = st.slider("検出の感度 (Confidence)", 0.1, 0.9, 0.25, 0.05,
-                                help="数値を下げると見逃しが減り、上げると誤検知が減ります")
+        st.success("✅ 自作AIモデル（Ant-YOLO v1）稼働中！")
+        conf_thresh = st.slider("検出の感度 (Confidence)", 0.1, 0.9, 0.40, 0.05,
+                                help="数値を上げると誤検知（大きな枠やゴミ）が減ります")
+        max_box_size = st.slider("アリの最大サイズ制限 (%)", 5, 30, 12, 1,
+                                 help="これより大きい四角はアリではないとして除外します")
+    else:
+        st.warning("⚠️ best.pt 読み込み待機中")
 
 uploaded_file = st.file_uploader("写真をアップロードしてください（8枚目以降の写真をどうぞ！）", type=["jpg", "jpeg", "png"])
 
@@ -108,17 +64,28 @@ if uploaded_file is not None:
     scale = canvas_width / orig_w
     canvas_height = int(orig_h * scale)
 
-    # --- AI自動下書きボタン ---
     if YOLO_AVAILABLE and model is not None:
         col_ai, col_clear = st.columns([2, 1])
         with col_ai:
             if st.button("🤖 自作AIで自動下書き（0.1秒でアリを囲む）", type="primary", use_container_width=True):
-                with st.spinner("自作AI（Ant-YOLO）がアリを探しています..."):
-                    results = model.predict(image, imgsz=640, conf=conf_thresh, verbose=False)
+                with st.spinner("自作AIが適切なサイズのアリを探しています..."):
+                    results = model.predict(image, imgsz=640, conf=conf_thresh, iou=0.45, verbose=False)
                     boxes = results[0].boxes
                     ai_objects = []
+                    
+                    # 画面幅に対する最大許容ピクセル
+                    max_allowed_w = orig_w * (max_box_size / 100.0)
+                    max_allowed_h = orig_h * (max_box_size / 100.0)
+
                     for b in boxes:
                         x1, y1, x2, y2 = b.xyxy[0].tolist()
+                        box_w = x2 - x1
+                        box_h = y2 - y1
+
+                        # 大きすぎる枠（部屋全体や水滴の誤認識）を除外！
+                        if box_w > max_allowed_w or box_h > max_allowed_h:
+                            continue
+
                         ai_objects.append({
                             "type": "rect",
                             "version": "4.4.0",
@@ -126,8 +93,8 @@ if uploaded_file is not None:
                             "originY": "top",
                             "left": round(x1 * scale, 1),
                             "top": round(y1 * scale, 1),
-                            "width": round((x2 - x1) * scale, 1),
-                            "height": round((y2 - y1) * scale, 1),
+                            "width": round(box_w * scale, 1),
+                            "height": round(box_h * scale, 1),
                             "fill": "rgba(255, 0, 0, 0.2)",
                             "stroke": "red",
                             "strokeWidth": 2,
@@ -144,7 +111,7 @@ if uploaded_file is not None:
                 st.session_state["canvas_key"] += 1
                 st.rerun()
 
-    st.caption("💡 操作方法: AIが描いた四角を確認し、見逃されたアリを手動でドラッグして四角を追加してください。")
+    st.caption("💡 操作方法: 四角をクリックしてキーボードの「Delete」または「Backspace」で消去、ドラッグで追加できます。")
 
     initial_drawing = {
         "version": "4.4.0",
