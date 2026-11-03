@@ -9,16 +9,6 @@ from datetime import datetime
 
 st.set_page_config(page_title="Ant YOLO Dataset Builder", layout="wide")
 
-# YOLOモデルの準備（best.ptがあれば読み込む）
-YOLO_AVAILABLE = False
-try:
-    from ultralytics import YOLO
-    if os.path.exists("best.pt"):
-        model = YOLO("best.pt")
-        YOLO_AVAILABLE = True
-except Exception as e:
-    YOLO_AVAILABLE = False
-
 st.title("🐜 Ant YOLO Dataset Builder（自作AIアシスト搭載）")
 
 # 保存先ディレクトリの準備
@@ -36,15 +26,69 @@ if "persistent_boxes" not in st.session_state:
 if "last_image_hash" not in st.session_state:
     st.session_state["last_image_hash"] = None
 
-# サイドバー：モデル状態の表示
+# --- YOLOモデルの診断とロード ---
+yolo_diag = []
+model = None
+YOLO_AVAILABLE = False
+
+try:
+    from ultralytics import YOLO
+    yolo_diag.append("✅ ultralytics ライブラリ: OK")
+except Exception as e:
+    yolo_diag.append(f"❌ ultralytics エラー: {e}")
+
+# パスの探索
+possible_paths = [
+    "best.pt",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.pt"),
+    "manual_best.pt"
+]
+found_path = None
+for p in possible_paths:
+    if os.path.exists(p):
+        found_path = p
+        break
+
+if found_path and "YOLO" in locals():
+    try:
+        model = YOLO(found_path)
+        YOLO_AVAILABLE = True
+        yolo_diag.append(f"✅ モデル読み込み成功！ ({os.path.basename(found_path)})")
+    except Exception as e:
+        yolo_diag.append(f"❌ モデル読込エラー: {e}")
+elif not found_path:
+    yolo_diag.append("⚠️ best.pt が見つかりません")
+
+# サイドバー表示
 with st.sidebar:
     st.subheader("🤖 AIアシスト状態")
+    for msg in yolo_diag:
+        if "✅" in msg:
+            st.success(msg)
+        elif "❌" in msg:
+            st.error(msg)
+        else:
+            st.warning(msg)
+
+    # 画面から直接 best.pt を読み込むフォールバック
+    if not YOLO_AVAILABLE and "YOLO" in locals():
+        st.markdown("---")
+        st.write("📁 **PCの `best.pt` を直接ドラッグ＆ドロップ：**")
+        uploaded_pt = st.file_uploader("best.pt を選択", type=["pt"], key="pt_uploader")
+        if uploaded_pt is not None:
+            try:
+                with open("manual_best.pt", "wb") as f:
+                    f.write(uploaded_pt.getbuffer())
+                model = YOLO("manual_best.pt")
+                YOLO_AVAILABLE = True
+                st.success("🎉 モデル読み込み完了！")
+                st.rerun()
+            except Exception as e:
+                st.error(f"読み込み失敗: {e}")
+
     if YOLO_AVAILABLE:
-        st.success("✅ 自作AIモデル（Ant-YOLO v1）が稼働中！")
         conf_thresh = st.slider("検出の感度 (Confidence)", 0.1, 0.9, 0.25, 0.05,
                                 help="数値を下げると見逃しが減り、上げると誤検知が減ります")
-    else:
-        st.warning("⚠️ best.pt を読み込み中、または未配置です")
 
 uploaded_file = st.file_uploader("写真をアップロードしてください（8枚目以降の写真をどうぞ！）", type=["jpg", "jpeg", "png"])
 
@@ -52,7 +96,6 @@ if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
     current_image_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # 画像が切り替わったらキャンバスを初期化
     if st.session_state["last_image_hash"] != current_image_hash:
         st.session_state["last_image_hash"] = current_image_hash
         st.session_state["persistent_boxes"] = []
@@ -61,13 +104,12 @@ if uploaded_file is not None:
     image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     orig_w, orig_h = image.size
 
-    # キャンバス表示用の幅と縮尺計算
     canvas_width = 900
     scale = canvas_width / orig_w
     canvas_height = int(orig_h * scale)
 
     # --- AI自動下書きボタン ---
-    if YOLO_AVAILABLE:
+    if YOLO_AVAILABLE and model is not None:
         col_ai, col_clear = st.columns([2, 1])
         with col_ai:
             if st.button("🤖 自作AIで自動下書き（0.1秒でアリを囲む）", type="primary", use_container_width=True):
@@ -137,11 +179,9 @@ if uploaded_file is not None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             base_filename = f"ant_{timestamp}"
 
-            # 1. 元画像をそのまま保存
             img_save_path = os.path.join(IMAGES_DIR, f"{base_filename}.jpg")
             image.save(img_save_path, "JPEG", quality=95)
 
-            # 2. YOLO形式の正規化座標（0〜1）で保存
             label_save_path = os.path.join(LABELS_DIR, f"{base_filename}.txt")
             with open(label_save_path, "w") as f:
                 for obj in ant_boxes:
@@ -157,14 +197,13 @@ if uploaded_file is not None:
 
                     f.write(f"0 {center_x:.6f} {center_y:.6f} {norm_w:.6f} {norm_h:.6f}\n")
 
-            st.success(f"🎉 {count}匹のアリの学習データを保存しました！（通算写真数が増えました）")
+            st.success(f"🎉 {count}匹のアリの学習データを保存しました！")
             st.session_state["persistent_boxes"] = []
             st.session_state["canvas_key"] += 1
             st.rerun()
 
 st.divider()
 
-# --- 保存済みデータ管理とZIPダウンロード ---
 saved_images = sorted([f for f in os.listdir(IMAGES_DIR) if f.endswith(".jpg")])
 st.subheader(f"📁 保存済みデータ（現在: {len(saved_images)} 枚）")
 
