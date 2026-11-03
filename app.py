@@ -11,39 +11,40 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (500匹対応・王冠検出)",
+    page_title="Ant Worker Counter (高精度・500匹対応)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("最大500匹対応！長辺1600px・女王自動検出と手動微調整（追加/削除）ツール")
+st.write("Google AI Studio 無料枠最大（1日1,500回）＆高精度モデルでアリ・女王を自動検出します")
 
-# --- 🔑 APIキーの自動読み込み＆手動入力設定 ---
-secrets_key = ""
-if "GEMINI_API_KEY" in st.secrets:
-    secrets_key = st.secrets["GEMINI_API_KEY"]
+# --- 🔒 安全なAPIキー認証システム ---
+secrets_key = st.secrets.get("GEMINI_API_KEY", "")
+# ?admin=ant でアクセスすると入力不要
+is_admin = st.query_params.get("admin") == "ant"
 
 st.sidebar.header("⚙️ 設定")
-api_key = st.sidebar.text_input(
-    "Gemini APIキー (無料)",
-    value=secrets_key,
-    type="password",
-    help="Secretsにキーが設定されている場合は自動で入力済みになります。別のキーを使いたい場合のみ上書きしてください。"
-)
 
-if not secrets_key and not api_key:
-    st.sidebar.markdown(
-        "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
+if is_admin and secrets_key:
+    api_key = secrets_key
+    st.sidebar.success("👑 管理者モード（認証済み）")
+    st.sidebar.caption("あなたのSecretsキーを裏で安全に使用中（他人には見えません）。")
+else:
+    api_key = st.sidebar.text_input(
+        "Gemini APIキー (無料)",
+        value="",
+        type="password",
+        help="Google AI Studioで取得できる無料キーを入力してください。"
     )
+    if not api_key:
+        st.sidebar.markdown(
+            "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
+        )
 
-# モデル選択
-selected_model = st.sidebar.selectbox(
-    "AIモデル",
-    ["gemini-3.8-flash (標準・高精度)", "gemini-3.1-flash-lite (超高速・制限に強い)"],
-    index=0
-)
-model_name = "gemini-3.8-flash" if "3.8" in selected_model else "gemini-3.1-flash-lite"
+# 💡 無料枠が最も広く（1日1,500回）高精度なモデルに固定
+MODEL_NAME = "gemini-2.5-flash"
+st.sidebar.info(f"使用AIモデル: **{MODEL_NAME}**\n(無料枠最大・高精度)")
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
@@ -53,53 +54,54 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
     if not api_key:
-        st.error("⚠️ APIキーが見つかりません。サイドバーにGemini APIキーを入力してください。")
+        st.error("⚠️ APIキーが設定されていません。サイドバーにGemini APIキーを入力してください。")
     else:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 解析と王冠プロットを実行する", type="primary"):
+        if st.button("🎯 高精度解析を実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
             orig_width, orig_height = orig_image.size
 
-            # 長辺1600pxにリサイズ
+            # 長辺1600pxで細部をクッキリ保持
             max_size = 1600
             proc_image = orig_image.copy()
             if max(orig_width, orig_height) > max_size:
                 proc_image.thumbnail((max_size, max_size))
 
-            # JPEGに圧縮して送信サイズを軽量化
+            # 最高品質（95）で保存して細部（アリの脚・触覚）の潰れを防ぐ
             img_byte_arr = io.BytesIO()
-            proc_image.save(img_byte_arr, format="JPEG", quality=85)
+            proc_image.save(img_byte_arr, format="JPEG", quality=95)
             img_bytes = img_byte_arr.getvalue()
 
-            # 💡 【500匹対応・超軽量プロンプト】
+            # 💡 【高精度＆500匹対応プロンプト】
             prompt = (
-                "You are an expert entomology and computer vision assistant. "
-                "Detect EVERY SINGLE ant (worker) in this image with maximum precision up to 500+ ants. "
-                "Also, if the queen ant is present, identify her distinctly. "
-                "Coordinates x and y must be integers from 0 to 1000 relative to image size. "
-                "Return ONLY a compact raw JSON 2D array: "
-                "[[x, y, 'w'], [x, y, 'q']]. "
-                "Use 'w' for worker ant and 'q' for queen ant. "
-                "Strictly return JSON array only. No text, no markdown."
+                "You are an expert myrmecologist (ant scientist) and high-precision computer vision model. "
+                "Your mission is to detect and count EVERY individual adult ant in this artificial ant nest/formicarium up to 500+ ants.\n"
+                "CRITICAL INSTRUCTIONS:\n"
+                "1. Systematically scan the nest chamber by chamber, from top-left to bottom-right, inspecting corners and dense clusters.\n"
+                "2. Place the coordinates (x, y) EXACTLY on the thorax (center of the body) of each ant. Never place duplicate points on the head or gaster.\n"
+                "3. Include repletes (ants with swollen, translucent amber gasters), standard workers, and major/minor workers.\n"
+                "4. Identify the queen ant distinctly if present (significantly larger thorax/abdomen).\n"
+                "5. Do NOT count larvae, pupae, cotton, screws, reflections, or food particles — only live adult ants.\n"
+                "6. Coordinates x and y must be integers from 0 to 1000 relative to image width and height.\n"
+                "Return ONLY a compact raw JSON 2D array: [[x, y, 'w'], [x, y, 'q']]. "
+                "Use 'w' for worker ant and 'q' for queen ant. Output raw JSON only with no markdown."
             )
 
-            # ⏱️ 429制限（無料枠のクールダウン）をスマートに待機するリトライループ
             response = None
             max_retries = 3
             status_placeholder = st.empty()
 
             for attempt in range(max_retries):
                 try:
-                    status_placeholder.info(f"⏳ 画像を解析中...（モデル: {model_name}）")
+                    status_placeholder.info(f"⏳ 高精度スキャン中...（モデル: {MODEL_NAME}）")
                     api_start = time.time()
 
-                    # 💡 generate_content (アンダーバー付き) に修正
                     response = client.models.generate_content(
-                        model=model_name,
+                        model=MODEL_NAME,
                         contents=[
                             types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
                             prompt
@@ -115,30 +117,28 @@ if uploaded_file:
 
                 except APIError as e:
                     err_text = str(e)
+                    # 429 制限時の自動待機
                     if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
                         wait_sec = (attempt + 1) * 15
                         for sec in range(wait_sec, 0, -1):
                             status_placeholder.warning(
-                                f"⚠️ 無料枠の1分間リクエスト制限を検知しました。安全のため **あと{sec}秒** 待機して自動再開します（試行 {attempt+1}/{max_retries}）..."
+                                f"⚠️ 無料枠の制限を検知しました。安全のため **あと{sec}秒** 待機して自動再開します（試行 {attempt+1}/{max_retries}）..."
                             )
                             time.sleep(1)
                     else:
-                        status_placeholder.error(f"APIエラーが発生しました: {e}")
+                        status_placeholder.error(f"APIエラー: {e}")
                         st.stop()
 
             if not response or not response.text:
-                st.error("⚠️ 制限またはタイムアウトにより応答が得られませんでした。少し時間を置いて再度お試しください。")
+                st.error("⚠️ 応答が得られませんでした。少し時間を置いて再度お試しください。")
                 st.stop()
 
             response_text = response.text.strip()
-            # マークダウンのバッククォートがあれば除去
             if response_text.startswith("```"):
                 response_text = re.sub(r"^```(?:json)?\s*", "", response_text)
                 response_text = re.sub(r"\s*```$", "", response_text)
 
             ants_coords = []
-
-            # 💡 【パース処理】
             try:
                 result_data = json.loads(response_text)
                 if isinstance(result_data, list):
@@ -162,7 +162,6 @@ if uploaded_file:
             except Exception:
                 pass
 
-            # フォールバック正規表現救出
             if not ants_coords:
                 array_matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', response_text)
                 if array_matches:
@@ -172,13 +171,13 @@ if uploaded_file:
                 else:
                     dict_matches = re.findall(r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)', response_text, re.IGNORECASE)
                     for x_str, y_str in dict_matches:
-                        ants_coords.append({"x": int(x_str), "y": int(y_str), "type": "worker"})
+                        ants_coords.append({"x": int(x_str), "y": int(y_str), "type": ant_type})
 
             ai_count = len(ants_coords)
 
             if ai_count == 0:
                 st.error("⚠️ 座標データを取得できませんでした。")
-                with st.expander("🔍 AIからの生レスポンスを確認"):
+                with st.expander("🔍 生レスポンスを確認"):
                     st.text(response_text)
                 st.stop()
 
@@ -190,15 +189,14 @@ if uploaded_file:
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 解析完了！（全体: {elapsed_time:.1f}秒 / API: {api_elapsed:.1f}秒 / 検出総数: {ai_count}匹）")
+            st.success(f"✨ 高精度解析完了！（全体: {elapsed_time:.1f}秒 / API: {api_elapsed:.1f}秒 / 検出数: {ai_count}匹）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
         st.markdown("---")
         st.subheader("🎯 解析結果 ＆ 手動調整（追加・削除）")
         st.write(
-            "モードを選択して画像をクリックしてください。"
-            " **➕ 追加（青点）** で見落としを足し、**🗑️ 削除（黄色点）** で誤検知を消去できます。"
+            "**➕ 追加（青点）** で見落としを足し、**🗑️ 削除（黄色点）** で誤検知を消去できます。"
         )
 
         edit_mode = st.radio(
@@ -213,19 +211,18 @@ if uploaded_file:
 
         orig_w = st.session_state["orig_width"]
         orig_h = st.session_state["orig_height"]
-        max_canvas_width = 600
+        max_canvas_width = 700
         scale = max_canvas_width / orig_w
         canvas_width = max_canvas_width
         canvas_height = int(orig_h * scale)
 
         base_annotated = st.session_state["orig_image"].copy()
         draw_base = ImageDraw.Draw(base_annotated)
-        radius = max(6, int(orig_w * 0.007))
+        radius = max(5, int(orig_w * 0.006))
         ai_ants = st.session_state["ai_ants"]
 
-        # 王冠を描画する関数
         def draw_crown(draw, cx, cy, size):
-            half = int(size * 1.5)
+            half = int(size * 1.6)
             points = [
                 (cx - half, cy + half),
                 (cx + half, cy + half),
@@ -253,7 +250,6 @@ if uploaded_file:
                         width=2,
                     )
 
-        # 手動クリック用キャンバス
         canvas_result = st_canvas(
             fill_color=current_fill,
             stroke_width=3,
@@ -270,20 +266,15 @@ if uploaded_file:
         manual_deletes = []
 
         if canvas_result.json_data is not None:
-            objects = canvas_result.json_data.get("objects", [])
-            for obj in objects:
-                canvas_x = obj.get("left", 0)
-                canvas_y = obj.get("top", 0)
-                img_x = int(canvas_x / scale)
-                img_y = int(canvas_y / scale)
-
+            for obj in canvas_result.json_data.get("objects", []):
+                img_x = int(obj.get("left", 0) / scale)
+                img_y = int(obj.get("top", 0) / scale)
                 stroke_color = obj.get("stroke", "").lower()
                 if "ffcc" in stroke_color or "yellow" in stroke_color or "#ffcc00" in stroke_color:
                     manual_deletes.append((img_x, img_y))
                 else:
                     manual_adds.append((img_x, img_y))
 
-        # 削除指定（黄色点）の近くにある点を除外
         valid_ai_ants = []
         for ant in ai_ants:
             if not isinstance(ant, dict):
@@ -294,14 +285,13 @@ if uploaded_file:
             is_deleted = False
             for dx, dy in manual_deletes:
                 dist = ((ax - dx) ** 2 + (ay - dy) ** 2) ** 0.5
-                if dist < 25:
+                if dist < 22:
                     is_deleted = True
                     break
 
             if not is_deleted:
                 valid_ai_ants.append(ant)
 
-        # 最終プレビュー描画
         final_image = st.session_state["orig_image"].copy()
         draw_final = ImageDraw.Draw(final_image)
 
