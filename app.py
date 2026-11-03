@@ -11,13 +11,13 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (全域スキャン版)",
+    page_title="Ant Worker Counter (上下全域スキャン)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("アリの精密カウント＆手動微調整ツール（全域スキャン・500匹対応）")
+st.write("上下2分割スキャンで、巣の全部屋（上半分・下半分）を隅々まで漏れなく数え切ります！")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -40,19 +40,9 @@ else:
             "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
         )
 
-# モデル選択
-model_options = {
-    "gemini-flash-latest（🌟おすすめ・全体を高精度スキャン）": "gemini-flash-latest",
-    "gemini-3.1-flash-lite（🚀超高速・制限なし）": "gemini-3.1-flash-lite",
-    "gemini-3.8-flash（🎯最新知能・待機あり）": "gemini-3.8-flash",
-}
-
-selected_label = st.sidebar.selectbox(
-    "AIモデルを選択",
-    list(model_options.keys()),
-    index=0  # 全体認識力の高い flash-latest をデフォルトに推奨
-)
-MODEL_NAME = model_options[selected_label]
+# 無料枠で最も制限に強く爆速なモデルを使用
+MODEL_NAME = "gemini-3.1-flash-lite"
+st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(上下2分割スキャンで全域を完全網羅)")
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
@@ -67,133 +57,132 @@ if uploaded_file:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 全域解析を実行する", type="primary"):
+        if st.button("🎯 上下全域スキャンを実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
-            orig_width, orig_height = orig_image.size
+            orig_w, orig_h = orig_image.size
 
-            # 1200pxに調整（下半分や隅のアリもしっかり捉える解像度）
-            max_size = 1200
-            proc_image = orig_image.copy()
-            if max(orig_width, orig_height) > max_size:
-                proc_image.thumbnail((max_size, max_size))
+            # 全体サイズを1000pxに調整
+            max_size = 1000
+            proc_img = orig_image.copy()
+            if max(orig_w, orig_h) > max_size:
+                proc_img.thumbnail((max_size, max_size))
 
-            img_byte_arr = io.BytesIO()
-            proc_image.save(img_byte_arr, format="JPEG", quality=90)
-            img_bytes = img_byte_arr.getvalue()
+            cur_w, cur_h = proc_img.size
 
-            # 💡 【改行・空白なしの1行圧縮JSONを指示】
-            prompt = (
-                "You are an expert myrmecologist. Detect and count EVERY ant across the ENTIRE image without stopping halfway.\n"
-                "INSTRUCTIONS:\n"
-                "1. Thoroughly scan BOTH the top half AND the bottom half, including bottom chambers and all corners.\n"
-                "2. Place coordinates (x, y) on the thorax of each ant.\n"
-                "3. Include repletes (amber gasters) and standard workers.\n"
-                "4. Identify the queen ant distinctly as 'q'.\n"
-                "5. Do NOT stop until EVERY ant in the bottom half is also recorded.\n"
-                "6. Return ONLY a single-line minified JSON array without newlines: [[x,y,'w'],[x,y,'q']]."
-            )
+            # 💡 【核心技術】画像を上半分と下半分に分割（真ん中にわずかな重なりを持たせる）
+            split_y = int(cur_h * 0.5)
+            overlap = int(cur_h * 0.05)  # 5%の重複を持たせて境目の見落としを防ぐ
 
-            response = None
-            max_retries = 3
-            status_placeholder = st.empty()
+            top_img = proc_img.crop((0, 0, cur_w, split_y + overlap))
+            bottom_img = proc_img.crop((0, split_y - overlap, cur_w, cur_h))
 
-            for attempt in range(max_retries):
-                try:
-                    status_placeholder.info(f"⏳ 全画面スキャン中...（使用モデル: {MODEL_NAME}）")
-                    api_start = time.time()
+            # AIへ渡す解析関数
+            def scan_slice(image_slice, slice_name):
+                img_buf = io.BytesIO()
+                image_slice.save(img_buf, format="JPEG", quality=90)
+                img_bytes = img_buf.getvalue()
 
-                    # 💡 max_output_tokensを8192に全開放して途中で切れるのを防止！
-                    response = client.models.generate_content(
-                        model=MODEL_NAME,
-                        contents=[
-                            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                            prompt
-                        ],
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            max_output_tokens=8192,
-                        )
+                prompt = (
+                    f"Count EVERY adult ant in this {slice_name} of the formicarium. "
+                    "Place coordinates (x, y) on the thorax of each ant. "
+                    "Include swollen repletes and standard workers. Identify queen as 'q'. "
+                    "x and y must be 0 to 1000. "
+                    "Return ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No extra text."
+                )
+
+                resp = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=[
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                        prompt
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        max_output_tokens=2000,
                     )
-                    api_elapsed = time.time() - api_start
-                    status_placeholder.empty()
-                    break
+                )
+                return resp.text.strip() if resp and resp.text else "[]"
 
-                except APIError as e:
-                    err_text = str(e)
-                    if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
-                        wait_sec = (attempt + 1) * 15
-                        for sec in range(wait_sec, 0, -1):
-                            status_placeholder.warning(
-                                f"⚠️ 無料枠の制限を検知しました。安全のため **あと{sec}秒** 待機して自動再開します（試行 {attempt+1}/{max_retries}）..."
-                            )
-                            time.sleep(1)
-                    else:
-                        status_placeholder.error(f"APIエラー: {e}")
-                        st.stop()
-
-            if not response or not response.text:
-                st.error("⚠️ 応答が得られませんでした。少し時間を置いてお試しください。")
-                st.stop()
-
-            response_text = response.text.strip()
-            if response_text.startswith("```"):
-                response_text = re.sub(r"^```(?:json)?\s*", "", response_text)
-                response_text = re.sub(r"\s*```$", "", response_text)
-
+            status_box = st.empty()
             ants_coords = []
-            try:
-                result_data = json.loads(response_text)
-                if isinstance(result_data, list):
-                    for item in result_data:
-                        if isinstance(item, list) and len(item) >= 2:
-                            ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
-                            ants_coords.append({"x": int(item[0]), "y": int(item[1]), "type": ant_type})
-                        elif isinstance(item, dict):
-                            ant_type = item.get("type", "worker")
-                            ants_coords.append({"x": int(item.get("x", 0)), "y": int(item.get("y", 0)), "type": ant_type})
-                elif isinstance(result_data, dict):
-                    for v in result_data.values():
-                        if isinstance(v, list):
-                            for item in v:
-                                if isinstance(item, list) and len(item) >= 2:
-                                    ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
-                                    ants_coords.append({"x": int(item[0]), "y": int(item[1]), "type": ant_type})
-                                elif isinstance(item, dict):
-                                    ants_coords.append({"x": int(item.get("x", 0)), "y": int(item.get("y", 0)), "type": item.get("type", "worker")})
-                            break
-            except Exception:
-                pass
 
-            if not ants_coords:
-                array_matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', response_text)
-                if array_matches:
-                    for x_str, y_str, t_str in array_matches:
-                        ant_type = "queen" if t_str and t_str.lower() in ["q", "queen"] else "worker"
-                        ants_coords.append({"x": int(x_str), "y": int(y_str), "type": ant_type})
-                else:
-                    dict_matches = re.findall(r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)', response_text, re.IGNORECASE)
-                    for x_str, y_str in dict_matches:
-                        ants_coords.append({"x": int(x_str), "y": int(y_str), "type": ant_type})
+            try:
+                # 1. 上半分のスキャン
+                status_box.info("🔍 [1/2] 上半分の部屋をスキャン中...")
+                t_start = time.time()
+                top_res_text = scan_slice(top_img, "upper chambers")
+
+                # 上半分のパース
+                top_raw = []
+                try:
+                    top_raw = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", top_res_text))
+                except Exception:
+                    matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', top_res_text)
+                    top_raw = [[int(x), int(y), t or 'w'] for x, y, t in matches]
+
+                top_h = top_img.size[1]
+                for item in top_raw:
+                    if len(item) >= 2:
+                        # 全体座標（0〜1000）に換算
+                        px = item[0]
+                        py = int((item[1] / 1000.0) * (top_h / cur_h) * 1000.0)
+                        ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
+                        ants_coords.append({"x": px, "y": py, "type": ant_type})
+
+                # APIに優しく1秒休憩
+                time.sleep(1.0)
+
+                # 2. 下半分のスキャン
+                status_box.info("🔍 [2/2] 下半分の部屋をスキャン中...")
+                bottom_res_text = scan_slice(bottom_img, "lower chambers")
+
+                # 下半分のパース
+                bottom_raw = []
+                try:
+                    bottom_raw = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", bottom_res_text))
+                except Exception:
+                    matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', bottom_res_text)
+                    bottom_raw = [[int(x), int(y), t or 'w'] for x, y, t in matches]
+
+                bottom_offset_y = (split_y - overlap) / cur_h
+                bottom_h_ratio = bottom_img.size[1] / cur_h
+
+                for item in bottom_raw:
+                    if len(item) >= 2:
+                        px = item[0]
+                        py = int((bottom_offset_y + (item[1] / 1000.0) * bottom_h_ratio) * 1000.0)
+                        ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
+
+                        # 境目の重複検出を除外（近くにすでに点があれば追加しない）
+                        is_dup = False
+                        for existing in ants_coords:
+                            dist = ((existing["x"] - px)**2 + (existing["y"] - py)**2)**0.5
+                            if dist < 18:
+                                is_dup = True
+                                break
+                        if not is_dup:
+                            ants_coords.append({"x": px, "y": py, "type": ant_type})
+
+                status_box.empty()
+                api_elapsed = time.time() - t_start
+
+            except Exception as e:
+                status_box.error(f"スキャン中にエラーが発生しました: {e}")
+                st.stop()
 
             ai_count = len(ants_coords)
-
-            if ai_count == 0:
-                st.error("⚠️ 座標データを取得できませんでした。")
-                with st.expander("🔍 生レスポンスを確認"):
-                    st.text(response_text)
-                st.stop()
-
             elapsed_time = time.time() - start_time
+
             st.session_state["orig_image"] = orig_image
             st.session_state["ai_ants"] = ants_coords
-            st.session_state["orig_width"] = orig_width
-            st.session_state["orig_height"] = orig_height
+            st.session_state["orig_width"] = orig_w
+            st.session_state["orig_height"] = orig_h
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 全域解析完了！（検出数: {ai_count}匹 / API時間: {api_elapsed:.1f}秒）")
+            st.success(f"✨ 全部屋スキャン完了！（上・下合計: {ai_count}匹検出 / 処理時間: {elapsed_time:.1f}秒）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
