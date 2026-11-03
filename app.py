@@ -11,13 +11,13 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (形態ペア検証・高精度)",
+    page_title="Ant Worker Counter (シンプルプロンプト×4分割)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("【胸＋腹部ペア検証モード】アリ特有の「胸部と腹部の連結構造」を確認して厳密カウント！")
+st.write("シンプル指示 × 田の字4分割ズームで、AI本来の直感的な検出力を引き出します！")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -69,7 +69,7 @@ if uploaded_file:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 胸＋腹部ペア検証スキャンを実行する", type="primary"):
+        if st.button("🎯 4分割スキャンを実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
@@ -91,19 +91,19 @@ if uploaded_file:
 
             quadrants = [
                 {
-                    "name": "左上の部屋",
+                    "name": "左上",
                     "box": (0, 0, split_x + overlap_x, split_y + overlap_y),
                 },
                 {
-                    "name": "右上の部屋",
+                    "name": "右上",
                     "box": (split_x - overlap_x, 0, cur_w, split_y + overlap_y),
                 },
                 {
-                    "name": "左下の部屋",
+                    "name": "左下",
                     "box": (0, split_y - overlap_y, split_x + overlap_x, cur_h),
                 },
                 {
-                    "name": "右下の部屋",
+                    "name": "右下",
                     "box": (split_x - overlap_x, split_y - overlap_y, cur_w, cur_h),
                 },
             ]
@@ -121,28 +121,23 @@ if uploaded_file:
                     cropped_img = proc_img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
 
                     img_buf = io.BytesIO()
-                    cropped_img.save(img_buf, format="JPEG", quality=95)
+                    cropped_img.save(img_buf, format="JPEG", quality=92)
                     img_bytes = img_buf.getvalue()
 
-                    # 💡 【核心：胸部と腹部のペア検証プロンプト】
+                    # 💡 【原点回帰：シンプルで強力なプロンプト】
                     prompt = (
-                        f"You are a master entomologist and computer vision expert analyzing a zoomed-in section ({quad['name']}) of an ant nest.\n"
-                        "MISSION: Detect EVERY SINGLE adult ant by verifying its morphological body parts.\n"
-                        "ANATOMICAL PAIR VERIFICATION (CRITICAL):\n"
-                        "1. THORAX + GASTER PAIR: An ant MUST have BOTH a thorax (mesosoma) and an abdomen (gaster) connected by a waist (petiole).\n"
-                        "   - Standard worker: Slender dark thorax connected to an oval gaster.\n"
-                        "   - Replete ant: A large swollen amber/translucent gaster connected to its front dark thorax/head.\n"
-                        "   - Do NOT count debris, screws, reflections, eggs, or white pupae that lack this connected two-part body.\n"
-                        "2. DENSE CLUSTERS: When ants touch or overlap, locate each separate thorax-gaster pair to ensure EVERY individual is counted separately.\n"
-                        "3. QUEEN: Identify the queen ('q') by her massive thorax with wing scars and large size. Workers are 'w'.\n"
-                        "4. COORDINATE: Place (x, y) EXACTLY on the thorax (body center).\n"
-                        "Output ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. Coordinates 0 to 1000. No text."
+                        f"Detect every single ant in this {quad['name']} image with high precision. "
+                        "Also identify the queen ant distinctly if present. "
+                        "x and y must be integers from 0 to 1000 relative to image size. "
+                        "Return ONLY a valid JSON list of objects. "
+                        "Format strictly as:\n"
+                        '[{"x": 150, "y": 320, "type": "worker"}, {"x": 500, "y": 410, "type": "queen"}]'
                     )
 
                     resp = None
                     for attempt in range(3):
                         try:
-                            status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を「胸＋腹部ペア検証」スキャン中... (モデル: {MODEL_NAME})")
+                            status_box.info(f"🔍 [{idx+1}/4] {quad['name']} エリアをスキャン中... (モデル: {MODEL_NAME})")
                             resp = client.models.generate_content(
                                 model=MODEL_NAME,
                                 contents=[
@@ -151,7 +146,7 @@ if uploaded_file:
                                 ],
                                 config=types.GenerateContentConfig(
                                     response_mime_type="application/json",
-                                    max_output_tokens=2000,
+                                    max_output_tokens=2500,
                                 )
                             )
                             break
@@ -175,37 +170,56 @@ if uploaded_file:
                     res_text = resp.text.strip() if resp and resp.text else "[]"
                     res_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", res_text)
 
-                    # パース処理
+                    # パース処理（辞書形式・配列形式の両方に対応）
                     raw_items = []
                     try:
-                        raw_items = json.loads(res_text)
+                        raw_data = json.loads(res_text)
+                        if isinstance(raw_data, list):
+                            raw_items = raw_data
+                        elif isinstance(raw_data, dict):
+                            for v in raw_data.values():
+                                if isinstance(v, list):
+                                    raw_items = v
+                                    break
                     except Exception:
-                        matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', res_text)
-                        raw_items = [[int(x), int(y), t or 'w'] for x, y, t in matches]
+                        pass
 
-                    # 座標換算＆近接マージ（判定距離15）
+                    # フォールバック正規表現救出
+                    if not raw_items:
+                        dict_matches = re.findall(r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)', res_text, re.IGNORECASE)
+                        for x_s, y_s in dict_matches:
+                            raw_items.append({"x": int(x_s), "y": int(y_s), "type": "worker"})
+
+                    # 座標換算＆近接マージ（のりしろの重複排除）
                     for item in raw_items:
-                        if isinstance(item, list) and len(item) >= 2:
-                            local_x = item[0]
-                            local_y = item[1]
+                        local_x, local_y, ant_type = 0, 0, "worker"
+
+                        if isinstance(item, dict):
+                            local_x = int(item.get("x", 0))
+                            local_y = int(item.get("y", 0))
+                            ant_type = item.get("type", "worker")
+                        elif isinstance(item, list) and len(item) >= 2:
+                            local_x = int(item[0])
+                            local_y = int(item[1])
                             ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
 
-                            global_x = int((crop_x0 + (local_x / 1000.0) * crop_w) / cur_w * 1000.0)
-                            global_y = int((crop_y0 + (local_y / 1000.0) * crop_h) / cur_h * 1000.0)
+                        global_x = int((crop_x0 + (local_x / 1000.0) * crop_w) / cur_w * 1000.0)
+                        global_y = int((crop_y0 + (local_y / 1000.0) * crop_h) / cur_h * 1000.0)
 
-                            is_duplicate = False
-                            for existing in ants_coords:
-                                dist = ((existing["x"] - global_x)**2 + (existing["y"] - global_y)**2)**0.5
-                                if dist < 15:
-                                    is_duplicate = True
-                                    if ant_type == "queen":
-                                        existing["type"] = "queen"
-                                    break
+                        # 重複チェック（距離18以内なら同一アリとみなす）
+                        is_duplicate = False
+                        for existing in ants_coords:
+                            dist = ((existing["x"] - global_x)**2 + (existing["y"] - global_y)**2)**0.5
+                            if dist < 18:
+                                is_duplicate = True
+                                if ant_type == "queen":
+                                    existing["type"] = "queen"
+                                break
 
-                            if not is_duplicate:
-                                ants_coords.append({"x": global_x, "y": global_y, "type": ant_type})
+                        if not is_duplicate:
+                            ants_coords.append({"x": global_x, "y": global_y, "type": ant_type})
 
-                    time.sleep(0.5)
+                    time.sleep(0.4)
 
                 status_box.empty()
                 api_elapsed = time.time() - api_start_time
@@ -224,7 +238,7 @@ if uploaded_file:
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 形態ペア検証スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒）")
+            st.success(f"✨ 4分割スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
