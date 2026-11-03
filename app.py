@@ -11,17 +11,16 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (高精度・500匹対応)",
+    page_title="Ant Worker Counter (モデル選択対応)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("Google最新の無料高精度モデル（gemini-3.8-flash）でアリ・女王を自動検出します")
+st.write("アリの精密カウント＆手動微調整ツール（無料モデル切替対応）")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
-# ?admin=ant でアクセスすると入力不要
 is_admin = st.query_params.get("admin") == "ant"
 
 st.sidebar.header("⚙️ 設定")
@@ -29,7 +28,6 @@ st.sidebar.header("⚙️ 設定")
 if is_admin and secrets_key:
     api_key = secrets_key
     st.sidebar.success("👑 管理者モード（認証済み）")
-    st.sidebar.caption("あなたのSecretsキーを裏で安全に使用中（他人には見えません）。")
 else:
     api_key = st.sidebar.text_input(
         "Gemini APIキー (無料)",
@@ -42,9 +40,19 @@ else:
             "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
         )
 
-# 💡 Google公式推奨の最新モデル
-MODEL_NAME = "gemini-3.8-flash"
-st.sidebar.info(f"使用AIモデル: **{MODEL_NAME}**\n(Google公式最新・高精度)")
+# 💡 今使える3大モデルから自由に選べるように設置！
+model_options = {
+    "gemini-3.1-flash-lite（🚀制限なし・超高速）": "gemini-3.1-flash-lite",
+    "gemini-flash-latest（⚖️標準・安定バランス）": "gemini-flash-latest",
+    "gemini-3.8-flash（🎯超高精度・制限待ちあり）": "gemini-3.8-flash",
+}
+
+selected_label = st.sidebar.selectbox(
+    "AIモデルを選択",
+    list(model_options.keys()),
+    index=0  # 最初は最も制限に強い flash-lite に設定
+)
+MODEL_NAME = model_options[selected_label]
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
@@ -59,36 +67,34 @@ if uploaded_file:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 高精度解析を実行する", type="primary"):
+        if st.button("🎯 解析とプロットを実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
             orig_width, orig_height = orig_image.size
 
-            # 長辺1600pxで細部をクッキリ保持
-            max_size = 1600
+            # 1000pxにリサイズしてトークンを大幅節約
+            max_size = 1000
             proc_image = orig_image.copy()
             if max(orig_width, orig_height) > max_size:
                 proc_image.thumbnail((max_size, max_size))
 
-            # 最高品質（95）で保存して細部（アリの脚・触覚）の潰れを防ぐ
             img_byte_arr = io.BytesIO()
-            proc_image.save(img_byte_arr, format="JPEG", quality=95)
+            proc_image.save(img_byte_arr, format="JPEG", quality=90)
             img_bytes = img_byte_arr.getvalue()
 
-            # 💡 【高精度＆500匹対応プロンプト】
             prompt = (
-                "You are an expert myrmecologist (ant scientist) and high-precision computer vision model. "
-                "Your mission is to detect and count EVERY individual adult ant in this artificial ant nest/formicarium up to 500+ ants.\n"
+                "You are an expert myrmecologist (ant scientist) and computer vision model. "
+                "Detect and count EVERY individual adult ant in this artificial ant nest/formicarium.\n"
                 "CRITICAL INSTRUCTIONS:\n"
-                "1. Systematically scan the nest chamber by chamber, from top-left to bottom-right, inspecting corners and dense clusters.\n"
-                "2. Place the coordinates (x, y) EXACTLY on the thorax (center of the body) of each ant. Never place duplicate points on the head or gaster.\n"
-                "3. Include repletes (ants with swollen, translucent amber gasters), standard workers, and major/minor workers.\n"
+                "1. Systematically inspect every chamber from top-left to bottom-right.\n"
+                "2. Place coordinates (x, y) EXACTLY on the thorax (center of the body) of each ant. Never place duplicate points.\n"
+                "3. Include repletes (swollen translucent amber gasters) and standard workers.\n"
                 "4. Identify the queen ant distinctly if present (significantly larger thorax/abdomen).\n"
-                "5. Do NOT count larvae, pupae, cotton, screws, reflections, or food particles — only live adult ants.\n"
-                "6. Coordinates x and y must be integers from 0 to 1000 relative to image width and height.\n"
+                "5. Do NOT count larvae, pupae, cotton, screws, or reflections — only live adult ants.\n"
+                "6. Coordinates x and y must be integers from 0 to 1000 relative to image size.\n"
                 "Return ONLY a compact raw JSON 2D array: [[x, y, 'w'], [x, y, 'q']]. "
-                "Use 'w' for worker ant and 'q' for queen ant. Output raw JSON only with no markdown."
+                "Use 'w' for worker ant and 'q' for queen ant. Output raw JSON only."
             )
 
             response = None
@@ -97,7 +103,7 @@ if uploaded_file:
 
             for attempt in range(max_retries):
                 try:
-                    status_placeholder.info(f"⏳ 高精度スキャン中...（モデル: {MODEL_NAME}）")
+                    status_placeholder.info(f"⏳ スキャン中...（使用モデル: {MODEL_NAME}）")
                     api_start = time.time()
 
                     response = client.models.generate_content(
@@ -108,7 +114,7 @@ if uploaded_file:
                         ],
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json",
-                            max_output_tokens=3500,
+                            max_output_tokens=2500,
                         )
                     )
                     api_elapsed = time.time() - api_start
@@ -117,7 +123,6 @@ if uploaded_file:
 
                 except APIError as e:
                     err_text = str(e)
-                    # 429 制限時の自動待機
                     if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
                         wait_sec = (attempt + 1) * 15
                         for sec in range(wait_sec, 0, -1):
@@ -130,7 +135,7 @@ if uploaded_file:
                         st.stop()
 
             if not response or not response.text:
-                st.error("⚠️ 応答が得られませんでした。少し時間を置いて再度お試しください。")
+                st.error("⚠️ 応答が得られませんでした。別のモデルを選ぶか、少し時間を置いてお試しください。")
                 st.stop()
 
             response_text = response.text.strip()
@@ -176,7 +181,7 @@ if uploaded_file:
             ai_count = len(ants_coords)
 
             if ai_count == 0:
-                st.error("⚠️ 座標データを取得できませんでした。")
+                st.error("⚠️ 座標データを取得できませんでした。別のモデルをお試しください。")
                 with st.expander("🔍 生レスポンスを確認"):
                     st.text(response_text)
                 st.stop()
@@ -189,7 +194,7 @@ if uploaded_file:
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 高精度解析完了！（全体: {elapsed_time:.1f}秒 / API: {api_elapsed:.1f}秒 / 検出数: {ai_count}匹）")
+            st.success(f"✨ 解析完了！（全体: {elapsed_time:.1f}秒 / API: {api_elapsed:.1f}秒 / 検出数: {ai_count}匹）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
