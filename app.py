@@ -2,7 +2,7 @@ import io
 import json
 import re
 import time
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from google import genai
@@ -11,13 +11,13 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (極限精度・田の字4分割)",
+    page_title="Ant Worker Counter (極限精度・自動復旧付き)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("【極限精度モード】1600pxフル解像度 × 田の字4分割ズームで、密集・重なりも1匹ずつ分離検出！")
+st.write("【極限精度モード】1600pxフル解像度 × 田の字4分割ズーム（サーバー混雑時の自動復帰付き）")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -41,7 +41,7 @@ else:
         )
 
 MODEL_NAME = "gemini-3.1-flash-lite"
-st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(極限解像度・密集分離チューニング)")
+st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(極限解像度・自動再試行ガード搭載)")
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
@@ -62,7 +62,7 @@ if uploaded_file:
 
             orig_w, orig_h = orig_image.size
 
-            # 💡 【高解像度化】全体基準を1600pxに引き上げ（4分割画像が最高鮮明度に！）
+            # 1600px基準で高精細化
             max_size = 1600
             proc_img = orig_image.copy()
             if max(orig_w, orig_h) > max_size:
@@ -70,7 +70,7 @@ if uploaded_file:
 
             cur_w, cur_h = proc_img.size
 
-            # 田の字4分割（8%ののりしろで境界線のアリを完全救出）
+            # 田の字4分割（8%ののりしろ付き）
             split_x = int(cur_w * 0.5)
             split_y = int(cur_h * 0.5)
             overlap_x = int(cur_w * 0.08)
@@ -101,43 +101,63 @@ if uploaded_file:
 
             try:
                 for idx, quad in enumerate(quadrants):
-                    status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を極限精度でスキャン中...")
-
                     crop_x0, crop_y0, crop_x1, crop_y1 = quad["box"]
                     crop_w = crop_x1 - crop_x0
                     crop_h = crop_y1 - crop_y0
 
                     cropped_img = proc_img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
 
-                    # 💡 最高品質（95）で保存して極小アリの脚・輪郭を維持
                     img_buf = io.BytesIO()
                     cropped_img.save(img_buf, format="JPEG", quality=95)
                     img_bytes = img_buf.getvalue()
 
-                    # 💡 【密集・重なり・サナギ除外を徹底した極限プロンプト】
                     prompt = (
                         f"You are a world-class myrmecologist analyzing a zoomed-in section ({quad['name']}) of an ant nest.\n"
                         "MISSION: Detect EVERY SINGLE adult ant with 100% precision.\n"
                         "CRITICAL RULES:\n"
                         "1. DENSE CLUSTERS: When ants are touching, overlapping, or exchanging food, DO NOT merge them! Place a separate coordinate for EACH distinct thorax.\n"
                         "2. TYPES: Include swollen amber repletes, regular dark workers, and majors/minors.\n"
-                        "3. QUEEN: Identify the queen ant distinctly as 'q' (distinctly massive thorax/gaster with wing scars). Regular ants are 'w'.\n"
-                        "4. SHADOWS & CORNERS: Look closely along dark acrylic walls, corners, and under larger repletes.\n"
+                        "3. QUEEN: Identify the queen ant distinctly as 'q'. Regular ants are 'w'.\n"
+                        "4. SHADOWS: Look closely along dark acrylic walls, corners, and under larger repletes.\n"
                         "5. EXCLUSIONS: Do NOT count brood (eggs, larvae, white/cream pupae/cocoons) or cotton/screws.\n"
-                        "6. Format: coordinates x and y integers 0 to 1000. Output ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No markdown."
+                        "6. Format: integers 0 to 1000. Output ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No markdown."
                     )
 
-                    resp = client.models.generate_content(
-                        model=MODEL_NAME,
-                        contents=[
-                            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                            prompt
-                        ],
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            max_output_tokens=2000,
-                        )
-                    )
+                    # 💡 【503混雑や429制限を乗り越える自動リトライ機能】
+                    resp = None
+                    for attempt in range(3):
+                        try:
+                            status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を極限精度でスキャン中...")
+                            resp = client.models.generate_content(
+                                model=MODEL_NAME,
+                                contents=[
+                                    types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                                    prompt
+                                ],
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json",
+                                    max_output_tokens=2000,
+                                )
+                            )
+                            break
+                        except Exception as e:
+                            err_str = str(e)
+                            # 503混雑エラー時は2.5秒待機して自動リトライ
+                            if "503" in err_str or "UNAVAILABLE" in err_str:
+                                if attempt < 2:
+                                    status_box.warning(f"⚠️ Googleサーバーが一瞬混雑しています。自動で再開します（{attempt+1}/3）...")
+                                    time.sleep(2.5)
+                                else:
+                                    raise e
+                            # 429制限時は10秒待機
+                            elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                                if attempt < 2:
+                                    status_box.warning(f"⚠️ 無料枠のクールダウン中…10秒待機します（{attempt+1}/3）...")
+                                    time.sleep(10.0)
+                                else:
+                                    raise e
+                            else:
+                                raise e
 
                     res_text = resp.text.strip() if resp and resp.text else "[]"
                     res_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", res_text)
@@ -150,7 +170,7 @@ if uploaded_file:
                         matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', res_text)
                         raw_items = [[int(x), int(y), t or 'w'] for x, y, t in matches]
 
-                    # 座標換算＆近接マージ
+                    # 座標換算＆近接マージ（判定距離15）
                     for item in raw_items:
                         if isinstance(item, list) and len(item) >= 2:
                             local_x = item[0]
@@ -160,7 +180,6 @@ if uploaded_file:
                             global_x = int((crop_x0 + (local_x / 1000.0) * crop_w) / cur_w * 1000.0)
                             global_y = int((crop_y0 + (local_y / 1000.0) * crop_h) / cur_h * 1000.0)
 
-                            # 💡 密集した2匹を誤って消さないよう距離のしきい値を「15」に高精度化
                             is_duplicate = False
                             for existing in ants_coords:
                                 dist = ((existing["x"] - global_x)**2 + (existing["y"] - global_y)**2)**0.5
@@ -173,7 +192,7 @@ if uploaded_file:
                             if not is_duplicate:
                                 ants_coords.append({"x": global_x, "y": global_y, "type": ant_type})
 
-                    time.sleep(0.4)
+                    time.sleep(0.5)
 
                 status_box.empty()
                 api_elapsed = time.time() - api_start_time
@@ -214,7 +233,7 @@ if uploaded_file:
 
         orig_w = st.session_state["orig_width"]
         orig_h = st.session_state["orig_height"]
-        max_canvas_width = 750  # 💡 より見やすく大きく表示
+        max_canvas_width = 750
         scale = max_canvas_width / orig_w
         canvas_width = max_canvas_width
         canvas_height = int(orig_h * scale)
@@ -224,7 +243,6 @@ if uploaded_file:
         radius = max(5, int(orig_w * 0.0055))
         ai_ants = st.session_state["ai_ants"]
 
-        # 王冠描画関数
         def draw_crown(draw, cx, cy, size):
             half = int(size * 1.8)
             points = [
