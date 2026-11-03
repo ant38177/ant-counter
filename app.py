@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("Google AI Studio 無料枠最大（1日1,500回）＆高精度モデルでアリ・女王を自動検出します")
+st.write("Google最新の無料高精度モデル（gemini-3.8-flash）でアリ・女王を自動検出します")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -42,9 +42,9 @@ else:
             "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
         )
 
-# 💡 無料枠が最も広く（1日1,500回）高精度なモデルに固定
-MODEL_NAME = "gemini-2.5-flash"
-st.sidebar.info(f"使用AIモデル: **{MODEL_NAME}**\n(無料枠最大・高精度)")
+# 💡 Google公式推奨の最新モデル
+MODEL_NAME = "gemini-3.8-flash"
+st.sidebar.info(f"使用AIモデル: **{MODEL_NAME}**\n(Google公式最新・高精度)")
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
