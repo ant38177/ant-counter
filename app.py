@@ -1,34 +1,32 @@
-import streamlit as st
-from PIL import Image, ImageDraw
-import json
-import time
 import io
-import math
+import json
+import re
+import time
+from PIL import Image, ImageDraw
+import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from google import genai
 from google.genai import types
 
-# ---------------------------------------------------------
-# ページ設定
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="アリカウンター",
-    page_icon="🐜",
-    layout="wide"
-)
+# ページ全体のレイアウト設定
+st.set_page_config(page_title="Ant Worker Counter", layout="wide")
 
 # ---------------------------------------------------------
-# 認証・サイドバー設定
+# サイドバー設定（認証 & エンジン選択）
 # ---------------------------------------------------------
 query_params = st.query_params
 is_admin = query_params.get("admin") == "ant"
 secrets_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
-    st.header("設定")
+    st.header("⚙️ 設定")
     
+    # APIキーの自動判別
     if is_admin and secrets_api_key:
         st.success("👑 管理者モード（認証済み）")
+        api_key = secrets_api_key
+    elif secrets_api_key and not is_admin:
+        # 一般アクセスでSecretsがある場合も自動適用
         api_key = secrets_api_key
     else:
         api_key = st.text_input(
@@ -38,366 +36,337 @@ with st.sidebar:
             help="Google AI Studioで取得したAPIキーを入力してください。"
         )
         if not api_key:
-            st.caption("🔑 [Google AI StudioでAPIキーを取得](https://aistudio.google.com/app/apikey)")
+            st.caption("🔑 [Google AI Studioで無料取得](https://aistudio.google.com/app/apikey)")
 
     st.markdown("---")
     
-    # スキャン方式の選択
-    st.subheader("スキャン方式の選択")
-    scan_mode = st.radio(
-        "モードを選択",
-        [
-            "🧠 全体スキャン（オオアリ・少数コロニー向け）",
-            "🔍 田の字4分割ズーム（蜜壺アリ・密集100匹以上向け）"
-        ],
-        index=0
-    )
-    is_grid = "4分割" in scan_mode
-
-    st.markdown("---")
-    st.subheader("AIモデルの選択")
+    # 💡 ご要望：エンジン（AIモデル）の選択
+    st.subheader("🤖 AIエンジンの選択")
     model_choice = st.selectbox(
-        "スキャンに使用するモデル",
+        "使用するモデル",
         options=[
-            ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite（無料枠に強い・高速）"),
-            ("gemini-flash-latest", "gemini-flash-latest（標準・安定）"),
-            ("gemini-3.8-flash", "gemini-3.8-flash（最新知能）")
+            ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite（🚀 無料枠最強・高速）"),
+            ("gemini-flash-latest", "gemini-flash-latest（☀️ 標準・安定）"),
+            ("gemini-3.8-flash", "gemini-3.8-flash（🧠 最新知能・深層思考）")
         ],
         format_func=lambda x: x[1],
         index=0
     )[0]
+    st.caption(f"現在のエンジン: `{model_choice}`")
 
 # ---------------------------------------------------------
-# タイトル
+# メイン画面
 # ---------------------------------------------------------
-st.title("🐜 アリカウンター")
-st.caption("写真からアリを自動検出し、手動で追加・削除の微調整ができます。")
+st.title("🐜 Ant Worker Counter (王冠対応・高精度1600px)")
+st.write(
+    "アリの写真の解析（長辺1600px・女王自動検出）と、青点（追加）・黄色点（削除）による手動調整を行います。"
+)
 
-# ---------------------------------------------------------
-# プロンプト定義
-# ---------------------------------------------------------
-SCAN_PROMPT = """
-画像内のアリをカウントし、各アリの中心座標を出力してください。
+# 画像のアップローダー（1枚のみ）
+uploaded_file = st.file_uploader(
+    "アリのケース・巣の写真を選択",
+    type=["jpg", "jpeg", "png"],
+)
 
-【ルール】
-1. 画像全体を見てアリのサイズ感を把握し、脚や影ではなく「頭部と腹部をつなぐ中央の胴体（胸部: thorax）」のど真ん中に点を打ってください。
-2. 1匹のアリに対して出力する座標は厳密に1つだけです。アリがいない場所には絶対に座標を出さないでください。
-3. 女王アリ（他の個体より明らかに体格が巨大な個体）が存在する場合は "is_queen": true とし、通常の働きアリは "is_queen": false にしてください。
-
-必ず以下のJSON形式のみを返してください：
-{
-  "ants": [
-    {"y": 120, "x": 450, "is_queen": false},
-    {"y": 145, "x": 820, "is_queen": true}
-  ]
-}
-※ yとxは画像の左上を (0,0)、右下を (1000,1000) とする0〜1000の整数正規化座標です。
-"""
-
-# ---------------------------------------------------------
-# 単一画像スキャンAPI呼び出し
-# ---------------------------------------------------------
-def scan_image(client: genai.Client, image: Image.Image, model_name: str):
-    img_byte_arr = io.BytesIO()
-    rgb_img = image.convert("RGB")
-    rgb_img.save(img_byte_arr, format='JPEG', quality=95)
-    img_bytes = img_byte_arr.getvalue()
-    
-    contents = [
-        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-        SCAN_PROMPT
-    ]
-    config = types.GenerateContentConfig(
-        temperature=0.0,
-        max_output_tokens=3500,
-        response_mime_type="application/json"
-    )
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            res = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config
-            )
-            text = res.text.strip()
-            if text.startswith("```json"): text = text[7:]
-            if text.startswith("```"): text = text[3:]
-            if text.endswith("```"): text = text[:-3]
-            data = json.loads(text.strip())
-            return data.get("ants", [])
-        except Exception as e:
-            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < max_retries - 1:
-                time.sleep((attempt + 1) * 3)
-            elif attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                return []
-    return []
-
-# ---------------------------------------------------------
-# 田の字4分割ズームスキャン（密集用）
-# ---------------------------------------------------------
-def run_grid_scan(raw_image: Image.Image, api_key: str, model_name: str, progress_bar, status_box):
-    client = genai.Client(api_key=api_key)
-    orig_w, orig_h = raw_image.size
-    
-    overlap = 0.08
-    tile_defs = [
-        ("左上", 0.0, 0.0, 0.5 + overlap, 0.5 + overlap),
-        ("右上", 0.5 - overlap, 0.0, 1.0, 0.5 + overlap),
-        ("左下", 0.0, 0.5 - overlap, 0.5 + overlap, 1.0),
-        ("右下", 0.5 - overlap, 0.5 - overlap, 1.0, 1.0)
-    ]
-    
-    all_ants_pixel = []
-    
-    for i, (name, x1_r, y1_r, x2_r, y2_r) in enumerate(tile_defs):
-        progress_bar.progress((i) / 4.0)
-        status_box.info(f"スキャン中... ({i+1}/4: {name}区画)")
-        
-        px1 = int(x1_r * orig_w)
-        py1 = int(y1_r * orig_h)
-        px2 = min(orig_w, int(x2_r * orig_w))
-        py2 = min(orig_h, int(y2_r * orig_h))
-        
-        tile_w = px2 - px1
-        tile_h = py2 - py1
-        
-        tile_img = raw_image.crop((px1, py1, px2, py2))
-        tile_ants = scan_image(client, tile_img, model_name)
-        
-        for ant in tile_ants:
-            local_x = ant["x"] / 1000.0
-            local_y = ant["y"] / 1000.0
-            
-            global_px = px1 + (local_x * tile_w)
-            global_py = py1 + (local_y * tile_h)
-            
-            all_ants_pixel.append({
-                "px": global_px,
-                "py": global_py,
-                "is_queen": ant.get("is_queen", False)
-            })
-            
-        progress_bar.progress((i + 0.8) / 4.0)
-        if i < 3:
-            time.sleep(1.0)
-            
-    progress_bar.progress(1.0)
-    status_box.empty()
-    
-    # 適切な重複マージ（原寸ピクセルベースで約18px）
-    merge_threshold_px = max(16.0, orig_w * 0.015)
-    merged_ants = []
-    
-    for ant in all_ants_pixel:
-        duplicate = False
-        for m in merged_ants:
-            dx = ant["px"] - m["px"]
-            dy = ant["py"] - m["py"]
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < merge_threshold_px:
-                duplicate = True
-                if ant.get("is_queen", False):
-                    m["is_queen"] = True
-                break
-        if not duplicate:
-            merged_ants.append(ant)
-            
-    final_ants = []
-    for m in merged_ants:
-        final_ants.append({
-            "x": int((m["px"] / orig_w) * 1000.0),
-            "y": int((m["py"] / orig_h) * 1000.0),
-            "is_queen": m.get("is_queen", False)
-        })
-        
-    return final_ants
-
-# ---------------------------------------------------------
-# セッション状態
-# ---------------------------------------------------------
-if "detected_ants" not in st.session_state:
-    st.session_state.detected_ants = []
-if "image_analyzed" not in st.session_state:
-    st.session_state.image_analyzed = False
-if "current_image" not in st.session_state:
-    st.session_state.current_image = None
-if "image_id" not in st.session_state:
-    st.session_state.image_id = None
-
-# ---------------------------------------------------------
-# 写真アップロード & 実行
-# ---------------------------------------------------------
-uploaded_file = st.file_uploader("写真をアップロードしてください（JPG, PNG）", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    file_bytes = uploaded_file.getvalue()
-    if st.session_state.image_id != uploaded_file.name + str(len(file_bytes)):
-        st.session_state.image_id = uploaded_file.name + str(len(file_bytes))
-        st.session_state.current_image = Image.open(io.BytesIO(file_bytes))
-        st.session_state.detected_ants = []
-        st.session_state.image_analyzed = False
-
-    raw_image = st.session_state.current_image
-    orig_w, orig_h = raw_image.size
-
-    if st.button("スキャン実行", type="primary"):
-        if not api_key:
-            st.error("APIキーを入力してください。")
-        else:
-            prog = st.progress(0.0)
-            status_box = st.empty()
-            try:
-                if is_grid:
-                    # 4分割ズームスキャン
-                    ants = run_grid_scan(raw_image, api_key, model_choice, prog, status_box)
-                else:
-                    # 全体スキャン（画像切断なし・オオアリ向け）
-                    status_box.info("全体スキャン中...")
-                    client = genai.Client(api_key=api_key)
-                    ants = scan_image(client, raw_image, model_choice)
-                    prog.progress(1.0)
-                    status_box.empty()
-                    
-                st.session_state.detected_ants = ants
-                st.session_state.image_analyzed = True
-                st.success(f"スキャン完了：{len(ants)} 匹検出")
-            except Exception as e:
-                status_box.error(f"エラーが発生しました: {e}")
-
-    # ---------------------------------------------------------
-    # 手動調整キャンバス
-    # ---------------------------------------------------------
-    if st.session_state.image_analyzed:
-        st.markdown("---")
-        st.subheader("手動調整（追加・削除）")
-        st.caption("➕ 追加（青点）で見落としを足し、🗑️ 削除（黄色点）で誤検知をクリックして消去できます。")
-
-        display_w = 900
-        scale = display_w / orig_w
-        display_h = int(orig_h * scale)
-        resized_img = raw_image.resize((display_w, display_h))
-
-        # 背景画像に検出点を描画
-        annotated_bg = resized_img.copy()
-        draw = ImageDraw.Draw(annotated_bg)
-        r = 6
-        for ant in st.session_state.detected_ants:
-            px = int((ant["x"] / 1000.0) * display_w)
-            py = int((ant["y"] / 1000.0) * display_h)
-            if ant.get("is_queen", False):
-                draw.ellipse((px - r - 3, py - r - 3, px + r + 3, py + r + 3), fill="#f59e0b", outline="#ffffff", width=2)
-                draw.text((px - 5, py - 18), "👑", fill="#f59e0b")
-            else:
-                draw.ellipse((px - r, py - r, px + r, py + r), fill="#ef4444", outline="#ffffff", width=2)
-
-        tool_col1, _ = st.columns([1, 3])
-        with tool_col1:
-            tool_mode = st.radio("ツール", ["➕ 追加 (青点)", "🗑️ 削除 (黄色点)"], index=0)
-
-        is_add_mode = "追加" in tool_mode
-        current_color = "#3b82f6" if is_add_mode else "#eab308"
-
-        canvas_result = st_canvas(
-            fill_color=current_color,
-            stroke_width=2,
-            stroke_color="#ffffff",
-            background_image=annotated_bg,
-            update_streamlit=True,
-            height=display_h,
-            width=display_w,
-            drawing_mode="point",
-            point_display_radius=6,
-            key=f"canvas_{is_grid}",
+if uploaded_file:
+    if not api_key:
+        st.error(
+            "⚠️ APIキーが設定されていません。サイドバーにAPIキーを入力するか、Streamlit CloudのSecretsに `GEMINI_API_KEY` を設定してください。"
         )
-
-        # 手動調整の集計
-        manual_added_coords = []
-        deleted_indices = set()
-
-        if canvas_result.json_data is not None:
-            objects = canvas_result.json_data.get("objects", [])
-            for obj in objects:
-                cx = obj.get("left", 0)
-                cy = obj.get("top", 0)
-                fill_str = str(obj.get("fill", "")).lower()
-                stroke_str = str(obj.get("stroke", "")).lower()
-                
-                is_blue = ("3b82f6" in fill_str or "rgb(59" in fill_str or "blue" in fill_str or
-                           "3b82f6" in stroke_str or "rgb(59" in stroke_str)
-                is_yellow = ("eab308" in fill_str or "rgb(234" in fill_str or "yellow" in fill_str or
-                             "eab308" in stroke_str or "rgb(234" in stroke_str)
-
-                if is_blue:
-                    manual_added_coords.append((cx, cy))
-                elif is_yellow:
-                    closest_idx = -1
-                    min_dist = 25.0
-                    for idx, ant in enumerate(st.session_state.detected_ants):
-                        px = (ant["x"] / 1000.0) * display_w
-                        py = (ant["y"] / 1000.0) * display_h
-                        dist = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
-                        if dist < min_dist:
-                            min_dist = dist
-                            closest_idx = idx
-                    if closest_idx != -1:
-                        deleted_indices.add(closest_idx)
-
-        ai_valid_ants = [
-            ant for i, ant in enumerate(st.session_state.detected_ants)
-            if i not in deleted_indices
-        ]
+    else:
+        # 元画像の読み込み・プレビュー表示（ご要望：元画像常時表示）
+        orig_image = Image.open(uploaded_file)
         
-        queen_count = sum(1 for a in ai_valid_ants if a.get("is_queen", False))
-        worker_count = len(ai_valid_ants) - queen_count + len(manual_added_coords)
-        total_count = queen_count + worker_count
+        with st.expander("📷 アップロードされた元画像を確認する", expanded=True):
+            st.image(orig_image, caption="元画像（未加工オリジナル）", use_container_width=True)
+
+        if st.button("🎯 解析と王冠プロットを実行する", type="primary"):
+            start_time = time.time()
+
+            with st.spinner(f"超高精度モード（1600px / {model_choice}）で画像を解析し、女王と働きアリを検出しています..."):
+                try:
+                    client = genai.Client(api_key=api_key)
+                    orig_width, orig_height = orig_image.size
+
+                    # 【解像度引き上げ】長辺を1600pxに調整
+                    max_size = 1600
+                    proc_image = orig_image.copy()
+                    if max(orig_width, orig_height) > max_size:
+                        proc_image.thumbnail((max_size, max_size))
+
+                    # 画像バイト列の作成
+                    img_byte_arr = io.BytesIO()
+                    proc_image.convert("RGB").save(img_byte_arr, format='JPEG', quality=95)
+                    img_bytes = img_byte_arr.getvalue()
+
+                    # プロンプト（女王の検出指示）
+                    prompt = (
+                        "You are an expert entomology and computer vision assistant. "
+                        "Detect EVERY SINGLE ant (worker) in this image with maximum possible precision. "
+                        "Also, if the queen ant is present, identify her distinctly. "
+                        "x and y must be integers from 0 to 1000 relative to image size. "
+                        "Classify each as 'worker' or 'queen'. "
+                        "Return ONLY a valid JSON list of objects. "
+                        "Format strictly as:\n"
+                        '[{"x": 150, "y": 320, "type": "worker"}, {"x": 500, "y": 410, "type": "queen"}]'
+                    )
+
+                    contents = [
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                        prompt
+                    ]
+                    config = types.GenerateContentConfig(
+                        temperature=0.0,
+                        max_output_tokens=8192,
+                        response_mime_type="application/json"
+                    )
+
+                    api_start = time.time()
+                    response = client.models.generate_content(
+                        model=model_choice,
+                        contents=contents,
+                        config=config
+                    )
+                    api_elapsed = time.time() - api_start
+
+                    response_text = response.text.strip()
+
+                    # バッククォートなどを除去
+                    if response_text.startswith("```"):
+                        response_text = (
+                            response_text.split("```")[1]
+                            .lstrip("json")
+                            .strip()
+                            .rstrip("```")
+                            .strip()
+                        )
+
+                    ants_coords = []
+
+                    # ① 通常のJSONパース
+                    try:
+                        result_data = json.loads(response_text)
+                        if isinstance(result_data, list):
+                            ants_coords = result_data
+                        elif isinstance(result_data, dict):
+                            for k, v in result_data.items():
+                                if isinstance(v, list):
+                                    ants_coords = v
+                                    break
+                    except Exception:
+                        pass
+
+                    # ② 正規表現による座標救出（フォールバック）
+                    if not ants_coords:
+                        matches = re.findall(
+                            r'["\']?x["\']?\s*[:=]\s*(\d+)\D+["\']?y["\']?\s*[:=]\s*(\d+)',
+                            response_text,
+                            re.IGNORECASE,
+                        )
+                        for x_str, y_str in matches:
+                            ants_coords.append({"x": int(x_str), "y": int(y_str), "type": "worker"})
+
+                    ai_count = len(ants_coords)
+
+                    if ai_count == 0:
+                        st.error("⚠️ 座標データが取得できませんでした。出力フォーマットを確認してください。")
+                        with st.expander("🔍 AIからの生レスポンスを確認する"):
+                            st.text(response_text)
+                        st.stop()
+
+                    elapsed_time = time.time() - start_time
+
+                    st.session_state["orig_image"] = orig_image
+                    st.session_state["ai_ants"] = ants_coords
+                    st.session_state["orig_width"] = orig_width
+                    st.session_state["orig_height"] = orig_height
+                    st.session_state["elapsed_time"] = elapsed_time
+                    st.session_state["api_elapsed"] = api_elapsed
+
+                    st.success(
+                        f"✨ 解析完了！（全体: {elapsed_time:.1f}秒 / API: {api_elapsed:.1f}秒 / 検出総数: {ai_count}匹）"
+                    )
+
+                except Exception as e:
+                    st.error(f"予期せぬエラーが発生しました: {e}")
 
         # ---------------------------------------------------------
-        # 集計サマリ & 保存
+        # 解析結果と手動調整の表示
         # ---------------------------------------------------------
-        st.markdown("---")
-        sum_col1, sum_col2 = st.columns([1, 1])
-
-        with sum_col1:
-            st.subheader("集計サマリ")
-            st.metric("総計カウント数", f"{total_count} 匹")
-            st.write(f"👑 女王アリ: {queen_count} 匹 ｜ 🐜 働きアリ: {worker_count} 匹")
-            st.caption(f"（内訳: AI検出 {len(ai_valid_ants)} ｜ 追加 +{len(manual_added_coords)} ｜ 削除 -{len(deleted_indices)}）")
-
-        with sum_col2:
-            st.subheader("画像の保存")
-            final_img = raw_image.copy()
-            final_draw = ImageDraw.Draw(final_img)
-            orig_r = max(5, int(orig_w * 0.007))
-
-            for ant in ai_valid_ants:
-                fx = int((ant["x"] / 1000.0) * orig_w)
-                fy = int((ant["y"] / 1000.0) * orig_h)
-                if ant.get("is_queen", False):
-                    final_draw.ellipse((fx - orig_r - 4, fy - orig_r - 4, fx + orig_r + 4, fy + orig_r + 4), fill="#f59e0b", outline="#ffffff", width=3)
-                else:
-                    final_draw.ellipse((fx - orig_r, fy - orig_r, fx + orig_r, fy + orig_r), fill="#ef4444", outline="#ffffff", width=2)
-
-            for (cx, cy) in manual_added_coords:
-                fx = int((cx / display_w) * orig_w)
-                fy = int((cy / display_h) * orig_h)
-                final_draw.ellipse((fx - orig_r, fy - orig_r, fx + orig_r, fy + orig_r), fill="#3b82f6", outline="#ffffff", width=2)
-
-            buf = io.BytesIO()
-            final_img.save(buf, format="JPEG", quality=95)
-            st.download_button(
-                label="カウント結果画像をダウンロード",
-                data=buf.getvalue(),
-                file_name="ant_count_result.jpg",
-                mime="image/jpeg",
-                use_container_width=True
+        if "ai_ants" in st.session_state:
+            st.markdown("---")
+            st.subheader("🎯 解析結果 ＆ 手動調整（追加・削除）")
+            st.write(
+                "モードを選択して画像をクリックしてください。"
+                " **➕ 追加（青点）** で見落としを足し、**🗑️ 削除（黄色点）** で誤検知を消去できます。（※女王は王冠マークで表示されます）"
             )
 
-        with st.expander("確定プレビュー", expanded=True):
-            preview_thumb = final_img.resize((display_w, display_h))
-            st.image(preview_thumb, caption=f"合計 {total_count} 匹")
-else:
-    st.info("カウントしたいアリの写真をアップロードしてください。")
+            edit_mode = st.radio(
+                "ペンツールの種類を選択",
+                ["➕ 追加 (青点)", "🗑️ 削除 (黄色点)"],
+                horizontal=True,
+                key="edit_mode_radio",
+            )
+
+            if "追加" in edit_mode:
+                current_stroke = "#0000FF"
+                current_fill = "rgba(0, 0, 255, 0.4)"
+            else:
+                current_stroke = "#FFCC00"
+                current_fill = "rgba(255, 204, 0, 0.6)"
+
+            orig_w = st.session_state["orig_width"]
+            orig_h = st.session_state["orig_height"]
+            max_canvas_width = 850
+            scale = max_canvas_width / orig_w
+            canvas_width = max_canvas_width
+            canvas_height = int(orig_h * scale)
+
+            base_annotated = st.session_state["orig_image"].copy()
+            draw_base = ImageDraw.Draw(base_annotated)
+            radius = max(8, int(orig_w * 0.008))
+            ai_ants = st.session_state["ai_ants"]
+
+            # 王冠を描画するヘルパー関数
+            def draw_crown(draw, cx, cy, size):
+                half = int(size * 1.5)
+                points = [
+                    (cx - half, cy + half),
+                    (cx + half, cy + half),
+                    (cx + half, cy - half * 0.5),
+                    (cx + half * 0.5, cy - half),
+                    (cx, cy - half * 0.5),
+                    (cx - half * 0.5, cy - half),
+                    (cx - half, cy - half * 0.5),
+                ]
+                draw.polygon(points, fill="#FFD700", outline="white", width=2)
+
+            for ant in ai_ants:
+                if isinstance(ant, dict):
+                    px = int(ant.get("x", 0) * orig_w / 1000)
+                    py = int(ant.get("y", 0) * orig_h / 1000)
+                    ant_type = ant.get("type", "worker")
+
+                    if ant_type == "queen":
+                        draw_crown(draw_base, px, py, radius)
+                    else:
+                        draw_base.ellipse(
+                            [px - radius, py - radius, px + radius, py + radius],
+                            fill="red",
+                            outline="white",
+                            width=2,
+                        )
+
+            # キャンバスウィジェット
+            canvas_result = st_canvas(
+                fill_color=current_fill,
+                stroke_width=3,
+                stroke_color=current_stroke,
+                background_image=base_annotated,
+                update_streamlit=True,
+                height=canvas_height,
+                width=canvas_width,
+                drawing_mode="point",
+                key="canvas_edit_mode",
+            )
+
+            # 追加と削除の分離
+            manual_adds = []
+            manual_deletes = []
+
+            if canvas_result.json_data is not None:
+                objects = canvas_result.json_data.get("objects", [])
+                for obj in objects:
+                    canvas_x = obj.get("left", 0)
+                    canvas_y = obj.get("top", 0)
+                    img_x = int(canvas_x / scale)
+                    img_y = int(canvas_y / scale)
+
+                    stroke_color = obj.get("stroke", "").lower()
+                    if (
+                        "ffcc" in stroke_color
+                        or "yellow" in stroke_color
+                        or "#ffcc00" in stroke_color
+                    ):
+                        manual_deletes.append((img_x, img_y))
+                    else:
+                        manual_adds.append((img_x, img_y))
+
+            # 削除の反映
+            valid_ai_ants = []
+            for ant in ai_ants:
+                if not isinstance(ant, dict):
+                    continue
+                ax = int(ant.get("x", 0) * orig_w / 1000)
+                ay = int(ant.get("y", 0) * orig_h / 1000)
+
+                is_deleted = False
+                for dx, dy in manual_deletes:
+                    dist = ((ax - dx) ** 2 + (ay - dy) ** 2) ** 0.5
+                    if dist < 25:
+                        is_deleted = True
+                        break
+
+                if not is_deleted:
+                    valid_ai_ants.append(ant)
+
+            # 最終プレビュー画像の作成
+            final_image = st.session_state["orig_image"].copy()
+            draw_final = ImageDraw.Draw(final_image)
+
+            queen_count = 0
+            for ant in valid_ai_ants:
+                px = int(ant.get("x", 0) * orig_w / 1000)
+                py = int(ant.get("y", 0) * orig_h / 1000)
+                ant_type = ant.get("type", "worker")
+
+                if ant_type == "queen":
+                    queen_count += 1
+                    draw_crown(draw_final, px, py, radius)
+                else:
+                    draw_final.ellipse(
+                        [px - radius, py - radius, px + radius, py + radius],
+                        fill="red",
+                        outline="white",
+                        width=2,
+                    )
+
+            for ax, ay in manual_adds:
+                draw_final.ellipse(
+                    [ax - radius, ay - radius, ax + radius, ay + radius],
+                    fill="blue",
+                    outline="white",
+                    width=2,
+                )
+
+            final_ai_count = len(valid_ai_ants)
+            added_count = len(manual_adds)
+            deleted_count = len(manual_deletes)
+            total_count = final_ai_count + added_count
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.subheader("📸 確定プレビュー（赤:働きアリ / 👑:女王 / 青:追加）")
+                st.image(final_image, use_container_width=True)
+
+            with col2:
+                st.subheader("📊 集計サマリー")
+                st.metric(
+                    label="🏁 確定カウント数", 
+                    value=f"{total_count} 匹",
+                    delta=f"追加+{added_count} / 削除-{deleted_count}" if (added_count > 0 or deleted_count > 0) else None
+                )
+                st.markdown("---")
+                st.metric(label="AI有効検出数", value=f"{final_ai_count} 匹")
+                if queen_count > 0:
+                    st.metric(label="👑 女王検出", value=f"{queen_count} 匹")
+                st.metric(label="手動追加（青）", value=f"{added_count} 個")
+                st.metric(label="削除指定（黄色）", value=f"{deleted_count} 個")
+
+                st.markdown("---")
+                if "elapsed_time" in st.session_state:
+                    st.caption(
+                        f"⏱️ 全体: {st.session_state['elapsed_time']:.1f}秒<br>"
+                        f"（API: {st.session_state.get('api_elapsed', 0):.1f}秒）",
+                        unsafe_allow_html=True
+                    )
