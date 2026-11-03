@@ -2,7 +2,7 @@ import io
 import json
 import re
 import time
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from google import genai
@@ -11,13 +11,13 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (田の字4分割・高精度)",
+    page_title="Ant Worker Counter (極限精度・田の字4分割)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("【田の字4分割スキャン】境界線のアリも逃さず、巣の全域を精密カウントします！")
+st.write("【極限精度モード】1600pxフル解像度 × 田の字4分割ズームで、密集・重なりも1匹ずつ分離検出！")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -40,9 +40,8 @@ else:
             "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
         )
 
-# 無料枠で制限にかからない最軽量モデルを使用
 MODEL_NAME = "gemini-3.1-flash-lite"
-st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(4分割ズーム＆重複自動排除)")
+st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(極限解像度・密集分離チューニング)")
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
@@ -57,24 +56,23 @@ if uploaded_file:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 田の字4分割スキャンを実行する", type="primary"):
+        if st.button("🎯 極限精度で解析を実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
             orig_w, orig_h = orig_image.size
 
-            # 全体基準サイズを1200pxに設定（4分割すると各画像は600px以上で超高解像度！）
-            max_size = 1200
+            # 💡 【高解像度化】全体基準を1600pxに引き上げ（4分割画像が最高鮮明度に！）
+            max_size = 1600
             proc_img = orig_image.copy()
             if max(orig_w, orig_h) > max_size:
                 proc_img.thumbnail((max_size, max_size))
 
             cur_w, cur_h = proc_img.size
 
-            # 💡 【田の字4分割＆のりしろ設計】
+            # 田の字4分割（8%ののりしろで境界線のアリを完全救出）
             split_x = int(cur_w * 0.5)
             split_y = int(cur_h * 0.5)
-            # 8%ののりしろ（オーバーラップ）を持たせて境界線のアリを切断しない
             overlap_x = int(cur_w * 0.08)
             overlap_y = int(cur_h * 0.08)
 
@@ -103,7 +101,7 @@ if uploaded_file:
 
             try:
                 for idx, quad in enumerate(quadrants):
-                    status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を拡大スキャン中...")
+                    status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を極限精度でスキャン中...")
 
                     crop_x0, crop_y0, crop_x1, crop_y1 = quad["box"]
                     crop_w = crop_x1 - crop_x0
@@ -111,16 +109,22 @@ if uploaded_file:
 
                     cropped_img = proc_img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
 
+                    # 💡 最高品質（95）で保存して極小アリの脚・輪郭を維持
                     img_buf = io.BytesIO()
-                    cropped_img.save(img_buf, format="JPEG", quality=92)
+                    cropped_img.save(img_buf, format="JPEG", quality=95)
                     img_bytes = img_buf.getvalue()
 
+                    # 💡 【密集・重なり・サナギ除外を徹底した極限プロンプト】
                     prompt = (
-                        f"Count EVERY adult ant in this zoomed-in {quad['name']} of the nest. "
-                        "Place coordinates (x, y) on the thorax (body center). "
-                        "Include repletes (swollen gasters) and standard workers. Identify queen as 'q'. "
-                        "x and y must be 0 to 1000. "
-                        "Return ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No extra text."
+                        f"You are a world-class myrmecologist analyzing a zoomed-in section ({quad['name']}) of an ant nest.\n"
+                        "MISSION: Detect EVERY SINGLE adult ant with 100% precision.\n"
+                        "CRITICAL RULES:\n"
+                        "1. DENSE CLUSTERS: When ants are touching, overlapping, or exchanging food, DO NOT merge them! Place a separate coordinate for EACH distinct thorax.\n"
+                        "2. TYPES: Include swollen amber repletes, regular dark workers, and majors/minors.\n"
+                        "3. QUEEN: Identify the queen ant distinctly as 'q' (distinctly massive thorax/gaster with wing scars). Regular ants are 'w'.\n"
+                        "4. SHADOWS & CORNERS: Look closely along dark acrylic walls, corners, and under larger repletes.\n"
+                        "5. EXCLUSIONS: Do NOT count brood (eggs, larvae, white/cream pupae/cocoons) or cotton/screws.\n"
+                        "6. Format: coordinates x and y integers 0 to 1000. Output ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No markdown."
                     )
 
                     resp = client.models.generate_content(
@@ -131,7 +135,7 @@ if uploaded_file:
                         ],
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json",
-                            max_output_tokens=1500,
+                            max_output_tokens=2000,
                         )
                     )
 
@@ -146,24 +150,22 @@ if uploaded_file:
                         matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', res_text)
                         raw_items = [[int(x), int(y), t or 'w'] for x, y, t in matches]
 
-                    # 💡 全体座標（0〜1000）への換算と「境界線の重複自動排除」
+                    # 座標換算＆近接マージ
                     for item in raw_items:
                         if isinstance(item, list) and len(item) >= 2:
                             local_x = item[0]
                             local_y = item[1]
                             ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
 
-                            # クロップ画像内の座標 → 全体座標（0〜1000）
                             global_x = int((crop_x0 + (local_x / 1000.0) * crop_w) / cur_w * 1000.0)
                             global_y = int((crop_y0 + (local_y / 1000.0) * crop_h) / cur_h * 1000.0)
 
-                            # 💡 のりしろ部分の重複チェック（すでに近くに点があれば同一アリとして追加しない）
+                            # 💡 密集した2匹を誤って消さないよう距離のしきい値を「15」に高精度化
                             is_duplicate = False
                             for existing in ants_coords:
                                 dist = ((existing["x"] - global_x)**2 + (existing["y"] - global_y)**2)**0.5
-                                if dist < 22:  # 約2%以内の近接点は二重カウントとみなしてマージ
+                                if dist < 15:
                                     is_duplicate = True
-                                    # 女王フラグがあれば上書き優先
                                     if ant_type == "queen":
                                         existing["type"] = "queen"
                                     break
@@ -171,8 +173,7 @@ if uploaded_file:
                             if not is_duplicate:
                                 ants_coords.append({"x": global_x, "y": global_y, "type": ant_type})
 
-                    # 無料枠のAPI制限に配慮して0.5秒ウェイト
-                    time.sleep(0.5)
+                    time.sleep(0.4)
 
                 status_box.empty()
                 api_elapsed = time.time() - api_start_time
@@ -191,7 +192,7 @@ if uploaded_file:
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 4分割精密スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒）")
+            st.success(f"✨ 極限精度スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
@@ -213,18 +214,19 @@ if uploaded_file:
 
         orig_w = st.session_state["orig_width"]
         orig_h = st.session_state["orig_height"]
-        max_canvas_width = 700
+        max_canvas_width = 750  # 💡 より見やすく大きく表示
         scale = max_canvas_width / orig_w
         canvas_width = max_canvas_width
         canvas_height = int(orig_h * scale)
 
         base_annotated = st.session_state["orig_image"].copy()
         draw_base = ImageDraw.Draw(base_annotated)
-        radius = max(5, int(orig_w * 0.006))
+        radius = max(5, int(orig_w * 0.0055))
         ai_ants = st.session_state["ai_ants"]
 
+        # 王冠描画関数
         def draw_crown(draw, cx, cy, size):
-            half = int(size * 1.6)
+            half = int(size * 1.8)
             points = [
                 (cx - half, cy + half),
                 (cx + half, cy + half),
@@ -287,7 +289,7 @@ if uploaded_file:
             is_deleted = False
             for dx, dy in manual_deletes:
                 dist = ((ax - dx) ** 2 + (ay - dy) ** 2) ** 0.5
-                if dist < 22:
+                if dist < 18:
                     is_deleted = True
                     break
 
