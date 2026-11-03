@@ -11,13 +11,13 @@ from google.genai.errors import APIError
 
 # --- ページ設定 ---
 st.set_page_config(
-    page_title="Ant Worker Counter (上下全域スキャン)",
+    page_title="Ant Worker Counter (田の字4分割・高精度)",
     page_icon="🐜",
     layout="centered"
 )
 
 st.title("🐜 Ant Worker Counter")
-st.write("上下2分割スキャンで、巣の全部屋（上半分・下半分）を隅々まで漏れなく数え切ります！")
+st.write("【田の字4分割スキャン】境界線のアリも逃さず、巣の全域を精密カウントします！")
 
 # --- 🔒 安全なAPIキー認証システム ---
 secrets_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -40,9 +40,9 @@ else:
             "[👉 無料のGemini APIキーを取得する (Google AI Studio)](https://aistudio.google.com/app/apikey)"
         )
 
-# 無料枠で最も制限に強く爆速なモデルを使用
+# 無料枠で制限にかからない最軽量モデルを使用
 MODEL_NAME = "gemini-3.1-flash-lite"
-st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(上下2分割スキャンで全域を完全網羅)")
+st.sidebar.info(f"AIモデル: **{MODEL_NAME}**\n(4分割ズーム＆重複自動排除)")
 
 # --- 画像アップローダー ---
 uploaded_file = st.file_uploader(
@@ -57,116 +57,125 @@ if uploaded_file:
         orig_image = Image.open(uploaded_file)
         st.image(orig_image, caption="アップロードされた画像", use_container_width=True)
 
-        if st.button("🎯 上下全域スキャンを実行する", type="primary"):
+        if st.button("🎯 田の字4分割スキャンを実行する", type="primary"):
             start_time = time.time()
             client = genai.Client(api_key=api_key)
 
             orig_w, orig_h = orig_image.size
 
-            # 全体サイズを1000pxに調整
-            max_size = 1000
+            # 全体基準サイズを1200pxに設定（4分割すると各画像は600px以上で超高解像度！）
+            max_size = 1200
             proc_img = orig_image.copy()
             if max(orig_w, orig_h) > max_size:
                 proc_img.thumbnail((max_size, max_size))
 
             cur_w, cur_h = proc_img.size
 
-            # 💡 【核心技術】画像を上半分と下半分に分割（真ん中にわずかな重なりを持たせる）
+            # 💡 【田の字4分割＆のりしろ設計】
+            split_x = int(cur_w * 0.5)
             split_y = int(cur_h * 0.5)
-            overlap = int(cur_h * 0.05)  # 5%の重複を持たせて境目の見落としを防ぐ
+            # 8%ののりしろ（オーバーラップ）を持たせて境界線のアリを切断しない
+            overlap_x = int(cur_w * 0.08)
+            overlap_y = int(cur_h * 0.08)
 
-            top_img = proc_img.crop((0, 0, cur_w, split_y + overlap))
-            bottom_img = proc_img.crop((0, split_y - overlap, cur_w, cur_h))
-
-            # AIへ渡す解析関数
-            def scan_slice(image_slice, slice_name):
-                img_buf = io.BytesIO()
-                image_slice.save(img_buf, format="JPEG", quality=90)
-                img_bytes = img_buf.getvalue()
-
-                prompt = (
-                    f"Count EVERY adult ant in this {slice_name} of the formicarium. "
-                    "Place coordinates (x, y) on the thorax of each ant. "
-                    "Include swollen repletes and standard workers. Identify queen as 'q'. "
-                    "x and y must be 0 to 1000. "
-                    "Return ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No extra text."
-                )
-
-                resp = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=[
-                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                        prompt
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        max_output_tokens=2000,
-                    )
-                )
-                return resp.text.strip() if resp and resp.text else "[]"
+            quadrants = [
+                {
+                    "name": "左上の部屋",
+                    "box": (0, 0, split_x + overlap_x, split_y + overlap_y),
+                },
+                {
+                    "name": "右上の部屋",
+                    "box": (split_x - overlap_x, 0, cur_w, split_y + overlap_y),
+                },
+                {
+                    "name": "左下の部屋",
+                    "box": (0, split_y - overlap_y, split_x + overlap_x, cur_h),
+                },
+                {
+                    "name": "右下の部屋",
+                    "box": (split_x - overlap_x, split_y - overlap_y, cur_w, cur_h),
+                },
+            ]
 
             status_box = st.empty()
             ants_coords = []
+            api_start_time = time.time()
 
             try:
-                # 1. 上半分のスキャン
-                status_box.info("🔍 [1/2] 上半分の部屋をスキャン中...")
-                t_start = time.time()
-                top_res_text = scan_slice(top_img, "upper chambers")
+                for idx, quad in enumerate(quadrants):
+                    status_box.info(f"🔍 [{idx+1}/4] {quad['name']} を拡大スキャン中...")
 
-                # 上半分のパース
-                top_raw = []
-                try:
-                    top_raw = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", top_res_text))
-                except Exception:
-                    matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', top_res_text)
-                    top_raw = [[int(x), int(y), t or 'w'] for x, y, t in matches]
+                    crop_x0, crop_y0, crop_x1, crop_y1 = quad["box"]
+                    crop_w = crop_x1 - crop_x0
+                    crop_h = crop_y1 - crop_y0
 
-                top_h = top_img.size[1]
-                for item in top_raw:
-                    if len(item) >= 2:
-                        # 全体座標（0〜1000）に換算
-                        px = item[0]
-                        py = int((item[1] / 1000.0) * (top_h / cur_h) * 1000.0)
-                        ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
-                        ants_coords.append({"x": px, "y": py, "type": ant_type})
+                    cropped_img = proc_img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
 
-                # APIに優しく1秒休憩
-                time.sleep(1.0)
+                    img_buf = io.BytesIO()
+                    cropped_img.save(img_buf, format="JPEG", quality=92)
+                    img_bytes = img_buf.getvalue()
 
-                # 2. 下半分のスキャン
-                status_box.info("🔍 [2/2] 下半分の部屋をスキャン中...")
-                bottom_res_text = scan_slice(bottom_img, "lower chambers")
+                    prompt = (
+                        f"Count EVERY adult ant in this zoomed-in {quad['name']} of the nest. "
+                        "Place coordinates (x, y) on the thorax (body center). "
+                        "Include repletes (swollen gasters) and standard workers. Identify queen as 'q'. "
+                        "x and y must be 0 to 1000. "
+                        "Return ONLY raw 2D array: [[x,y,'w'],[x,y,'q']]. No extra text."
+                    )
 
-                # 下半分のパース
-                bottom_raw = []
-                try:
-                    bottom_raw = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", bottom_res_text))
-                except Exception:
-                    matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', bottom_res_text)
-                    bottom_raw = [[int(x), int(y), t or 'w'] for x, y, t in matches]
+                    resp = client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=[
+                            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                            prompt
+                        ],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            max_output_tokens=1500,
+                        )
+                    )
 
-                bottom_offset_y = (split_y - overlap) / cur_h
-                bottom_h_ratio = bottom_img.size[1] / cur_h
+                    res_text = resp.text.strip() if resp and resp.text else "[]"
+                    res_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", res_text)
 
-                for item in bottom_raw:
-                    if len(item) >= 2:
-                        px = item[0]
-                        py = int((bottom_offset_y + (item[1] / 1000.0) * bottom_h_ratio) * 1000.0)
-                        ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
+                    # パース処理
+                    raw_items = []
+                    try:
+                        raw_items = json.loads(res_text)
+                    except Exception:
+                        matches = re.findall(r'\[\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\'"]?([a-zA-Z]+)[\'"]?)?\s*\]', res_text)
+                        raw_items = [[int(x), int(y), t or 'w'] for x, y, t in matches]
 
-                        # 境目の重複検出を除外（近くにすでに点があれば追加しない）
-                        is_dup = False
-                        for existing in ants_coords:
-                            dist = ((existing["x"] - px)**2 + (existing["y"] - py)**2)**0.5
-                            if dist < 18:
-                                is_dup = True
-                                break
-                        if not is_dup:
-                            ants_coords.append({"x": px, "y": py, "type": ant_type})
+                    # 💡 全体座標（0〜1000）への換算と「境界線の重複自動排除」
+                    for item in raw_items:
+                        if isinstance(item, list) and len(item) >= 2:
+                            local_x = item[0]
+                            local_y = item[1]
+                            ant_type = "queen" if (len(item) > 2 and str(item[2]).lower() in ["q", "queen"]) else "worker"
+
+                            # クロップ画像内の座標 → 全体座標（0〜1000）
+                            global_x = int((crop_x0 + (local_x / 1000.0) * crop_w) / cur_w * 1000.0)
+                            global_y = int((crop_y0 + (local_y / 1000.0) * crop_h) / cur_h * 1000.0)
+
+                            # 💡 のりしろ部分の重複チェック（すでに近くに点があれば同一アリとして追加しない）
+                            is_duplicate = False
+                            for existing in ants_coords:
+                                dist = ((existing["x"] - global_x)**2 + (existing["y"] - global_y)**2)**0.5
+                                if dist < 22:  # 約2%以内の近接点は二重カウントとみなしてマージ
+                                    is_duplicate = True
+                                    # 女王フラグがあれば上書き優先
+                                    if ant_type == "queen":
+                                        existing["type"] = "queen"
+                                    break
+
+                            if not is_duplicate:
+                                ants_coords.append({"x": global_x, "y": global_y, "type": ant_type})
+
+                    # 無料枠のAPI制限に配慮して0.5秒ウェイト
+                    time.sleep(0.5)
 
                 status_box.empty()
-                api_elapsed = time.time() - t_start
+                api_elapsed = time.time() - api_start_time
 
             except Exception as e:
                 status_box.error(f"スキャン中にエラーが発生しました: {e}")
@@ -182,7 +191,7 @@ if uploaded_file:
             st.session_state["elapsed_time"] = elapsed_time
             st.session_state["api_elapsed"] = api_elapsed
 
-            st.success(f"✨ 全部屋スキャン完了！（上・下合計: {ai_count}匹検出 / 処理時間: {elapsed_time:.1f}秒）")
+            st.success(f"✨ 4分割精密スキャン完了！（検出総数: {ai_count}匹 / 処理時間: {elapsed_time:.1f}秒）")
 
     # --- 解析結果 ＆ 手動調整キャンバス ---
     if "ai_ants" in st.session_state:
