@@ -1,6 +1,6 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-from PIL import Image
+from PIL import Image, ImageDraw
 import io
 import os
 import zipfile
@@ -154,7 +154,7 @@ if uploaded_file is not None:
             st.rerun()
 
 # ---------------------------------------------------------
-# 保存済みデータ管理（💡 選択して削除機能を追加）
+# 保存済みデータ管理（💡 選択して赤枠付きで確認できる機能）
 # ---------------------------------------------------------
 st.divider()
 st.subheader("📁 保存済みデータ管理")
@@ -169,9 +169,9 @@ st.write(f"保存済み写真数：**{len(saved_images)} 枚**")
 if saved_images:
     col_del, col_down = st.columns([1, 1])
 
-    # 🗑️ 個別選択して削除
+    # 🗑️ 個別選択して削除 ＆ 赤枠付きプレビュー
     with col_del:
-        st.write("##### 🗑️ 写真を選んで削除")
+        st.write("##### 🗑️ 写真を選んで削除（確認）")
         target_file = st.selectbox("削除したい写真を選択", saved_images)
         
         if target_file:
@@ -179,8 +179,29 @@ if saved_images:
             base_id = os.path.splitext(target_file)[0]
             target_lbl_path = os.path.join(LABEL_DIR, f"{base_id}.txt")
 
-            # プレビュー表示で消す写真を確認
-            st.image(target_img_path, width=220, caption=f"選択中: {target_file}")
+            # 💡 保存された画像をロードし、対応するラベル（赤枠）を重ねて描画する
+            preview_img = Image.open(target_img_path).convert("RGB")
+            p_w, p_h = preview_img.size
+            draw_prev = ImageDraw.Draw(preview_img)
+
+            if os.path.exists(target_lbl_path):
+                with open(target_lbl_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) == 5:
+                            _, cx, cy, w, h = map(float, parts)
+                            # YOLOの正規化座標からピクセル座標へ逆変換して描画
+                            bw = w * p_w
+                            bh = h * p_h
+                            bx = (cx * p_w) - (bw / 2)
+                            by = (cy * p_h) - (bh / 2)
+                            draw_prev.rectangle(
+                                [bx, by, bx + bw, by + bh],
+                                outline="#ff0000",
+                                width=3
+                            )
+
+            st.image(preview_img, width=300, caption=f"選択中: {target_file} (赤枠プレビュー)")
 
             if st.button(f"🗑️ `{target_file}` を削除する", type="secondary"):
                 if os.path.exists(target_img_path):
